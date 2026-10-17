@@ -46,6 +46,7 @@ func Load() *Config {
 	)
 	location := firstNonEmpty(
 		os.Getenv("GOOGLE_CLOUD_LOCATION"),
+		os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION"),
 		os.Getenv("GOOGLE_CLOUD_REGION"),
 	)
 	if location == "" {
@@ -56,11 +57,11 @@ func Load() *Config {
 		os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"),
 		os.Getenv("GOOGLE_GENAI_USE_ENTERPRISE"),
 	))
-	useVertexAI := useVertexEnv == "true" || useVertexEnv == "1" || project != ""
+	useVertexAI := useVertexEnv == "true" || useVertexEnv == "1" || project != "" || os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") != ""
 
-	// When running on Cloud Run (K_SERVICE is set) with Vertex AI / Self-Identity enabled,
-	// auto-detect the GCP Project ID from the Cloud Run Metadata Server if not explicitly set.
-	if (useVertexAI || os.Getenv("K_SERVICE") != "") && project == "" && apiKey == "" {
+	// When running on Cloud Run (K_SERVICE is set) or Agent Runtime with Vertex AI / Self-Identity enabled,
+	// auto-detect the GCP Project ID from the GCP Metadata Server if not explicitly set.
+	if (useVertexAI || os.Getenv("K_SERVICE") != "" || os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID") != "") && project == "" && apiKey == "" {
 		if metaProject := detectCloudRunProjectID(); metaProject != "" {
 			project = metaProject
 			useVertexAI = true
