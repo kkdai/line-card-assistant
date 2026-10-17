@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const DefaultModelName = "gemini-3.8-flash"
+const DefaultModelName = "gemini-2.5-flash"
 
 // Config holds the runtime configuration loaded from environment variables.
 type Config struct {
@@ -49,7 +49,7 @@ func Load() *Config {
 		os.Getenv("GOOGLE_CLOUD_REGION"),
 	)
 	if location == "" {
-		location = "global"
+		location = "us-central1"
 	}
 
 	useVertexEnv := strings.ToLower(firstNonEmpty(
@@ -68,14 +68,20 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:                   port,
-		LineChannelSecret:      strings.TrimSpace(os.Getenv("LINE_CHANNEL_SECRET")),
-		LineChannelAccessToken: strings.TrimSpace(os.Getenv("LINE_CHANNEL_ACCESS_TOKEN")),
-		GoogleAPIKey:           apiKey,
-		UseVertexAI:            useVertexAI,
-		GoogleCloudProject:     project,
-		GoogleCloudLocation:    location,
-		ModelName:              modelName,
+		Port: port,
+		LineChannelSecret: firstNonEmpty(
+			os.Getenv("LINE_CHANNEL_SECRET"),
+			os.Getenv("ChannelSecret"),
+		),
+		LineChannelAccessToken: firstNonEmpty(
+			os.Getenv("LINE_CHANNEL_ACCESS_TOKEN"),
+			os.Getenv("ChannelAccessToken"),
+		),
+		GoogleAPIKey:        apiKey,
+		UseVertexAI:         useVertexAI,
+		GoogleCloudProject:  project,
+		GoogleCloudLocation: location,
+		ModelName:           modelName,
 	}
 }
 
