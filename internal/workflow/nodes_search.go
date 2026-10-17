@@ -212,6 +212,7 @@ func newFormatCarouselNode() *workflow.FunctionNode {
 			if len(cards) == 0 {
 				reply := "😅 找不到符合條件的名片，建議換個關鍵字（例如公司名稱、職稱或活動場合）再試一次！"
 				setState(ctx, ev, StateKeyReplyText, reply)
+				ev.Content = genai.NewContentFromText(reply, genai.RoleModel)
 				ev.Output = reply
 				return ev, nil
 			}
@@ -224,6 +225,7 @@ func newFormatCarouselNode() *workflow.FunctionNode {
 			reply := fmt.Sprintf("🔍 為您找到 %d 張符合條件的名片：", len(cards))
 			setState(ctx, ev, StateKeyFlexCarouselJSON, flexJSON)
 			setState(ctx, ev, StateKeyReplyText, reply)
+			ev.Content = genai.NewContentFromText(flexJSON, genai.RoleModel)
 			ev.Output = flexJSON
 			return ev, nil
 		},
@@ -257,6 +259,7 @@ func newEmailDraftNode(llm model.LLM, cardStore store.CardStore) *workflow.Funct
 			draft := generateEmailDraft(ctx, llm, card)
 			setState(ctx, ev, StateKeyDraftEmailText, draft)
 			setState(ctx, ev, StateKeyReplyText, draft)
+			ev.Content = genai.NewContentFromText(draft, genai.RoleModel)
 			ev.Output = draft
 			return ev, nil
 		},

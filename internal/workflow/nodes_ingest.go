@@ -56,19 +56,55 @@ func newRouterNode() *workflow.FunctionNode {
 			ev := session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
+			// When invoked directly from ADK WebUI / A2A / Agent Engine Playground with an image part,
+			// populate StateKeyImageBytes automatically if not already set in session state.
+			if len(getBytesState(ctx, StateKeyImageBytes)) == 0 && ctx.UserContent() != nil {
+				for _, part := range ctx.UserContent().Parts {
+					if part != nil && part.InlineData != nil && len(part.InlineData.Data) > 0 {
+						setState(ctx, ev, StateKeyImageBytes, part.InlineData.Data)
+						if getStringState(ctx, StateKeyInputType) == "" {
+							setState(ctx, ev, StateKeyInputType, RouteIngest)
+						}
+						break
+					}
+				}
+			}
+
 			inputType := strings.ToLower(strings.TrimSpace(getStringState(ctx, StateKeyInputType)))
 			if inputType == "" {
-				if s, ok := input.(string); ok && strings.TrimSpace(s) != "" {
-					sLower := strings.ToLower(strings.TrimSpace(s))
+				if v, ok := ev.Actions.StateDelta[StateKeyInputType].(string); ok {
+					inputType = strings.ToLower(strings.TrimSpace(v))
+				}
+			}
+			if inputType == "" {
+				sTrim, _ := input.(string)
+				sTrim = strings.TrimSpace(sTrim)
+				if sTrim == "" && ctx.UserContent() != nil {
+					for _, part := range ctx.UserContent().Parts {
+						if part != nil && strings.TrimSpace(part.Text) != "" {
+							sTrim = strings.TrimSpace(part.Text)
+							break
+						}
+					}
+				}
+				if sTrim != "" {
+					sLower := strings.ToLower(sTrim)
 					switch {
 					case sLower == "image" || sLower == RouteIngest:
 						inputType = "image"
 					case sLower == "postback_draft" || sLower == RouteEmail || strings.HasPrefix(sLower, "action=draft_email"):
 						inputType = "postback_draft"
+						if getStringState(ctx, StateKeyTargetCardID) == "" {
+							for _, kv := range strings.Split(sTrim, "&") {
+								if after, ok := strings.CutPrefix(kv, "card_id="); ok && strings.TrimSpace(after) != "" {
+									setState(ctx, ev, StateKeyTargetCardID, strings.TrimSpace(after))
+								}
+							}
+						}
 					default:
 						inputType = "text"
 						if getStringState(ctx, StateKeyTextInput) == "" {
-							setState(ctx, ev, StateKeyTextInput, s)
+							setState(ctx, ev, StateKeyTextInput, sTrim)
 						}
 					}
 				}
@@ -258,9 +294,12 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 	)
 }
 
-// newCompanyEnrichNode uses an ADK llmagent equipped with geminitool.GoogleSearch{} to enrich company info & tags.
-func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
-	enrichAgent, _ := llmagent.New(llmagent.Config{
+// NewCompanyEnrichAgent constructs the ADK llmagent equipped with GoogleSearch used inside CompanyEnrichNode.
+func NewCompanyEnrichAgent(llm model.LLM) (agent.Agent, error) {
+	if llm == nil {
+		llm = NewMockLLM()
+	}
+	return llmagent.New(llmagent.Config{
 		Name:        "CompanyEnrichAgent",
 		Description: "Searches Google to summarize company background and industry tags.",
 		Model:       llm,
@@ -270,6 +309,11 @@ func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
 			geminitool.GoogleSearch{},
 		},
 	})
+}
+
+// newCompanyEnrichNode uses an ADK llmagent equipped with geminitool.GoogleSearch{} to enrich company info & tags.
+func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
+	enrichAgent, _ := NewCompanyEnrichAgent(llm)
 
 	return workflow.NewFunctionNode(
 		NodeCompanyEnrich,
@@ -442,6 +486,7 @@ func newBuildPreviewNode() *workflow.FunctionNode {
 			setState(ctx, ev, "extracted_card", card)
 			setState(ctx, ev, StateKeyFlexPreviewJSON, flexJSON)
 			setState(ctx, ev, "flex_payload_json", flexJSON)
+			ev.Content = genai.NewContentFromText(flexJSON, genai.RoleModel)
 			ev.Output = flexJSON
 			return ev, nil
 		},
@@ -696,6 +741,7 @@ func newSaveCardNode(cardStore store.CardStore, llm model.LLM) *workflow.Functio
 			setState(ctx, ev, StateKeySavedCardID, card.ID)
 			setState(ctx, ev, StateKeyDraftEmailText, draftEmail)
 			setState(ctx, ev, StateKeyReplyText, reply)
+			ev.Content = genai.NewContentFromText(reply, genai.RoleModel)
 			ev.Output = card
 			return ev, nil
 		},
