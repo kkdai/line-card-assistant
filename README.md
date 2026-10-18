@@ -1,11 +1,17 @@
 # LINE Card Assistant (`line-card-assistant`)
 
-An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **Google ADK 2.0 Graph Workflows (`google.golang.org/adk/v2`)**, **Gemini / Vertex AI Agent Platform (`google.golang.org/genai`)**, and **LINE Messaging API SDK v8 (`github.com/line/line-bot-sdk-go/v8`)**.
+An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **Google ADK 2.0 Graph Workflows (`google.golang.org/adk/v2`)**, **Google Cloud Agent Platform / Agent Runtime (`agents-cli` `adk_go`)**, **Gemini (`google.golang.org/genai`)**, and **LINE Messaging API SDK v8 (`github.com/line/line-bot-sdk-go/v8`)**.
+
+![LINE Card Assistant + Google Cloud Agent Platform Architecture](docs/architecture.png)
 
 ---
 
 ## ✨ Key Features
 
+- **Dual-Channel Agent Platform & LINE Webhook Architecture (`adk_go` + `agent_runtime`)**:
+  - **Root Agent Factory (`app.NewRootAgent`)**: Exposes the entire ADK 2.0 Graph Workflow as a standard `agent.Agent` (`line_card_assistant`) compatible with **Vertex AI Agent Runtime (`agentengine`)**, **ADK WebUI Playground (`webui`)**, and **Agent-to-Agent Protocol (`a2a` / `/.well-known/agent-card.json`)**, while preserving the standalone **LINE Webhook server (`cmd/server`)**.
+  - **Multi-Backend Managed Sessions (`sessions.NewService`)**: Seamlessly switches between in-memory sessions (`SESSION_TYPE=in_memory`), **Vertex AI Agent Engine Managed Sessions (`SESSION_TYPE=agent_engine` / `VertexAiEngineSessionService`)**, and **Cloud SQL PostgreSQL (`SESSION_TYPE=cloud_sql`)**.
+  - **Cloud Trace & OpenTelemetry Observability (`observability.go`)**: Automatically exports spans and structured logs to `telemetry.googleapis.com` via OTLP with Google ADC authentication.
 - **Multimodal Vision OCR (`VisionOCRNode`)**: Upload a business card photo in LINE to automatically extract structured fields (`Name`, `Title`, `Company`, `Email`, `Phone`, `Address`, `Website`, `TaxID`).
 - **ADK 2.0 Parallel Fan-Out / Fan-In Enrichment (`AddFanOut` / `AddFanIn`)**:
   - **`CleanAndDedupNode` [DB 查重與驗證]**: Normalizes Taiwan phone numbers (`09xx-xxx-xxx` $\rightarrow$ `+886-9xx-xxx-xxx`) and checks `CardStore` for existing contacts or job title promotions.
@@ -29,10 +35,14 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 ### 1. System Flowchart
 
 ```text
-[LINE Webhook] 
-      │
-      ▼
-[Router Node (AddRoutes)]
+[LINE Webhook (/webhook)]       [Agent Platform / ADK WebUI / A2A (/api, /a2a)]
+            │                                       │
+            └───────────────────┬───────────────────┘
+                                ▼
+                     [app.NewRootAgent(ctx)]
+                                │
+                                ▼
+                    [Router Node (AddRoutes)]
   ├── (收到名片照片) ──► [Vision OCR 節點] 
   │                           │
   │                    (AddFanOut 平行處理)
@@ -57,7 +67,9 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 
 ```mermaid
 flowchart TD
-    Webhook["LINE Webhook (/webhook)"] --> Router["RouterNode (AddRoute)"]
+    Webhook["LINE Webhook (/webhook)"] --> RootAgent["app.NewRootAgent (line_card_assistant)"]
+    AgentPlatform["Agent Platform / ADK WebUI / A2A"] --> RootAgent
+    RootAgent --> Router["RouterNode (AddRoute)"]
 
     %% Path A: Card Ingestion & HITL
     Router -->|"收到名片照片 (route: ingest)"| VisionOCR["VisionOCRNode (Vision OCR 節點)"]
@@ -90,6 +102,8 @@ flowchart TD
 
 | 流程圖節點 | 對應程式碼節點 / 函式 | 檔案位置 |
 | :--- | :--- | :--- |
+| `[app.NewRootAgent(ctx)]` | `app.NewRootAgent` / `app.NewRootAgentWithDeps` | `app/agent.go` |
+| `[Agent Platform / ADK WebUI / A2A]` | `universal.NewLauncher` (`webui`, `a2a`, `agentengine`, `appinfo`) | `main.go`, `appinfo/appinfo.go` |
 | `[LINE Webhook]` | `Handler.ServeHTTP` | `internal/linebot/handler.go` |
 | `[Router Node (AddRoutes)]` | `RouterNode` + `eb.AddRoute(...)` | `internal/workflow/graph.go`, `internal/workflow/nodes_ingest.go` |
 | `[Vision OCR 節點]` | `VisionOCRNode` (`newVisionOCRNode`) | `internal/workflow/nodes_ingest.go` |
@@ -111,9 +125,22 @@ flowchart TD
 
 ```text
 .
+├── main.go                         # ADK Universal Launcher entrypoint (WebUI, A2A, Agent Engine, AppInfo)
+├── apploader.go                    # Single-agent loader for ADK launcher
+├── appurl.go                       # Resolves public service URL for A2A & WebUI
+├── observability.go                # OpenTelemetry OTLP exporter to Google Cloud Trace & Logging
+├── agents-cli-manifest.yaml        # Google Cloud agents-cli (adk_go + agent_runtime) manifest
+├── app/
+│   ├── agent.go                    # Root ADK 2.0 Graph Workflow agent factory (app.NewRootAgent)
+│   └── agent_test.go               # Root agent & workflow integration tests
+├── appinfo/
+│   ├── appinfo.go                  # /app-info sublauncher exposing agent tree metadata for Evals
+│   └── appinfo_test.go
+├── sessions/
+│   └── sessions.go                 # Multi-backend session factory (in_memory, agent_engine, cloud_sql)
 ├── cmd/
 │   └── server/
-│       └── main.go                 # HTTP server entrypoint (/webhook, /healthz)
+│       └── main.go                 # Standalone LINE Webhook HTTP server (/webhook, /healthz)
 ├── internal/
 │   ├── config/
 │   │   └── config.go               # Env var loader (Cloud Run Self-Identity ADC, Vertex AI & API keys)
@@ -121,7 +148,8 @@ flowchart TD
 │   │   └── card.go                 # BusinessCard, SearchFilter, CardWorkflowState
 │   ├── store/
 │   │   ├── store.go                # CardStore / CardRepository interface
-│   │   └── memory.go               # Thread-safe in-memory store with 4 seeded Taiwan cards
+│   │   ├── memory.go               # Thread-safe in-memory store with 4 seeded Taiwan cards
+│   │   └── sqlite.go               # SQLite persistent store implementation
 │   ├── workflow/
 │   │   ├── graph.go                # ADK 2.0 Graph Workflow builder, runner & MockLLM
 │   │   ├── nodes_ingest.go         # Ingestion, Fan-Out/Fan-In, HITL & Edit Loop nodes
@@ -131,8 +159,10 @@ flowchart TD
 │       ├── handler.go              # LINE Messaging API v8 webhook handler
 │       ├── handler_test.go         # Webhook integration tests
 │       └── flex.go                 # Flex Message Bubble & Carousel JSON builders
-├── Dockerfile                      # Multi-stage Cloud Run ready container image
-├── Makefile                        # build, run, test, fmt targets
+├── docs/
+│   └── architecture.png            # System architecture diagram
+├── Dockerfile                      # Multi-stage distroless container image for Agent Runtime & Cloud Run
+├── Makefile                        # playground, local-backend, line-server, deploy, test targets
 └── README.md
 ```
 
@@ -206,15 +236,24 @@ make test
 go test -race -v ./...
 ```
 
-### 2. Run the Server Locally
+### 2. Launch Interactive ADK WebUI Playground (`:8501`)
 
 ```bash
-make run
+make playground
+# Open http://127.0.0.1:8501/ui/
 ```
 
-Verify health check:
+### 3. Launch Agent Runtime / A2A Local Backend (`:8000`)
 
 ```bash
-curl http://localhost:8080/healthz
-# {"status":"ok","service":"line-card-assistant"}
+make local-backend
+# Agent Card: curl http://127.0.0.1:8000/.well-known/agent-card.json
+# App Info:   curl http://127.0.0.1:8000/app-info
+```
+
+### 4. Launch Standalone LINE Webhook Server (`:8080`)
+
+```bash
+make line-server
+# Health Check: curl http://localhost:8080/healthz
 ```
