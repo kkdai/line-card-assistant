@@ -4,6 +4,8 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 
 ![LINE Card Assistant + Google Cloud Agent Platform Architecture](docs/architecture.png)
 
+![Phase 2: Stateless Cross-Instance HITL & GCS Artifact Architecture](docs/architecture-phase2.png)
+
 ---
 
 ## ✨ Key Features
