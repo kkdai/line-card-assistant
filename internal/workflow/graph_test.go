@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -8,6 +9,8 @@ import (
 	"github.com/kkdai/line-card-assistant/internal/config"
 	"github.com/kkdai/line-card-assistant/internal/linebot"
 	"github.com/kkdai/line-card-assistant/internal/store"
+	"google.golang.org/adk/v2/artifact"
+	"google.golang.org/adk/v2/session"
 )
 
 func TestCardIngestAndHITLResume(t *testing.T) {
@@ -210,5 +213,127 @@ func TestEmailDraftFlow(t *testing.T) {
 	}
 	if strings.TrimSpace(res.DraftEmailText) == "" {
 		t.Fatalf("expected non-empty DraftEmailText")
+	}
+}
+
+func TestCrossInstanceHITLResumeAndArtifactStorage(t *testing.T) {
+	ctx := context.Background()
+	memStore := store.NewMemoryStore()
+	cfg := config.Load()
+
+	// Shared SessionService and ArtifactService simulating Google Cloud Agent Platform
+	// (session/vertexai + artifact/gcsartifact) across two independent stateless container instances.
+	sharedSessionSvc := session.InMemoryService()
+	sharedArtifactSvc := artifact.InMemoryService()
+
+	instanceA, err := NewEngine(
+		cfg,
+		memStore,
+		NewMockLLM(),
+		WithSessionService(sharedSessionSvc),
+		WithArtifactService(sharedArtifactSvc),
+	)
+	if err != nil {
+		t.Fatalf("NewEngine(instanceA) failed: %v", err)
+	}
+
+	instanceB, err := NewEngine(
+		cfg,
+		memStore,
+		NewMockLLM(),
+		WithSessionService(sharedSessionSvc),
+		WithArtifactService(sharedArtifactSvc),
+	)
+	if err != nil {
+		t.Fatalf("NewEngine(instanceB) failed: %v", err)
+	}
+
+	userID := "cross-instance-user"
+	cardPhoto := []byte("fake-high-res-card-jpeg-payload")
+
+	// Turn 1 runs on Instance A: uploads card photo -> saves to ArtifactService -> pauses at HITLConfirmNode
+	turn1, err := instanceA.StartIngest(ctx, userID, cardPhoto, []string{"2026 Google Cloud Next Tokyo"})
+	if err != nil {
+		t.Fatalf("instanceA.StartIngest failed: %v", err)
+	}
+	if !turn1.WaitingHITL {
+		t.Fatalf("expected turn1.WaitingHITL == true on instanceA")
+	}
+
+	// Verify the binary image was saved in ArtifactService and NOT bloated into Session.State[StateKeyImageBytes]
+	loadedArt, err := sharedArtifactSvc.Load(ctx, &artifact.LoadRequest{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: turn1.SessionID,
+		FileName:  DefaultCardImageArtifactName,
+	})
+	if err != nil {
+		t.Fatalf("expected card photo in ArtifactService, Load failed: %v", err)
+	}
+	if loadedArt.Part == nil || loadedArt.Part.InlineData == nil || !bytes.Equal(loadedArt.Part.InlineData.Data, cardPhoto) {
+		t.Fatalf("artifact bytes mismatch: got %v, want %v", loadedArt.Part, cardPhoto)
+	}
+
+	sessResp, err := sharedSessionSvc.Get(ctx, &session.GetRequest{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: turn1.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("sharedSessionSvc.Get failed: %v", err)
+	}
+	if rawImg, err := sessResp.Session.State().Get(StateKeyImageBytes); err == nil && rawImg != nil {
+		t.Errorf("expected StateKeyImageBytes to be omitted from Session.State when ArtifactService is active, got %T", rawImg)
+	}
+	if artName := readStringFromSession(sessResp.Session, StateKeyCardImageArtifact); artName != DefaultCardImageArtifactName {
+		t.Errorf("expected StateKeyCardImageArtifact=%q in Session.State, got %q", DefaultCardImageArtifactName, artName)
+	}
+
+	// Turn 2 lands on Instance B (which has an empty local pendingSession map!):
+	// Instance B must discover the paused session from sharedSessionSvc and resume the edit loop.
+	if !instanceB.HasPendingHITL(userID) {
+		t.Fatalf("expected stateless instanceB.HasPendingHITL(%q) == true via shared SessionService", userID)
+	}
+
+	turn2, err := instanceB.ResumeHITL(ctx, userID, "職稱改為技術長")
+	if err != nil {
+		t.Fatalf("instanceB.ResumeHITL(edit) failed: %v", err)
+	}
+	if !turn2.WaitingHITL {
+		t.Fatalf("expected turn2.WaitingHITL == true after edit on instanceB")
+	}
+	if turn2.DraftCard == nil || turn2.DraftCard.Title != "技術長" {
+		t.Fatalf("expected updated Title '技術長' on instanceB, got %+v", turn2.DraftCard)
+	}
+
+	// Turn 3 lands back on Instance A (or another fresh Instance C) to confirm and save
+	instanceC, err := NewEngine(
+		cfg,
+		memStore,
+		NewMockLLM(),
+		WithSessionService(sharedSessionSvc),
+		WithArtifactService(sharedArtifactSvc),
+	)
+	if err != nil {
+		t.Fatalf("NewEngine(instanceC) failed: %v", err)
+	}
+
+	turn3, err := instanceC.ResumeHITL(ctx, userID, "action=confirm_save")
+	if err != nil {
+		t.Fatalf("instanceC.ResumeHITL(confirm_save) failed: %v", err)
+	}
+	if turn3.WaitingHITL {
+		t.Fatalf("expected turn3.WaitingHITL == false after confirm_save on instanceC")
+	}
+	if turn3.SavedCardID == "" {
+		t.Fatalf("expected SavedCardID after confirm_save on instanceC")
+	}
+
+	saved, err := memStore.GetByID(ctx, turn3.SavedCardID)
+	if err != nil {
+		t.Fatalf("memStore.GetByID failed: %v", err)
+	}
+	if saved.Title != "技術長" {
+		t.Errorf("expected saved card Title == '技術長', got %q", saved.Title)
 	}
 }

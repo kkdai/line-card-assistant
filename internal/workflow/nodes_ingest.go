@@ -57,11 +57,31 @@ func newRouterNode() *workflow.FunctionNode {
 			ev.Actions.StateDelta = make(map[string]any)
 
 			// When invoked directly from ADK WebUI / A2A / Agent Engine Playground with an image part,
-			// populate StateKeyImageBytes automatically if not already set in session state.
-			if len(getBytesState(ctx, StateKeyImageBytes)) == 0 && ctx.UserContent() != nil {
+			// persist the binary image into ctx.Artifacts() (GCS / In-Memory ArtifactService) and record
+			// only the lightweight artifact filename + version in Session.State.
+			if getStringState(ctx, StateKeyCardImageArtifact) == "" && len(getBytesState(ctx, StateKeyImageBytes)) == 0 && ctx.UserContent() != nil {
 				for _, part := range ctx.UserContent().Parts {
 					if part != nil && part.InlineData != nil && len(part.InlineData.Data) > 0 {
-						setState(ctx, ev, StateKeyImageBytes, part.InlineData.Data)
+						mimeType := part.InlineData.MIMEType
+						if strings.TrimSpace(mimeType) == "" {
+							mimeType = "image/jpeg"
+						}
+						savedToArtifact := false
+						if ctx.Artifacts() != nil {
+							saveResp, err := ctx.Artifacts().Save(
+								ctx,
+								DefaultCardImageArtifactName,
+								genai.NewPartFromBytes(part.InlineData.Data, mimeType),
+							)
+							if err == nil && saveResp != nil {
+								setState(ctx, ev, StateKeyCardImageArtifact, DefaultCardImageArtifactName)
+								setState(ctx, ev, StateKeyCardImageVersion, int(saveResp.Version))
+								savedToArtifact = true
+							}
+						}
+						if !savedToArtifact {
+							setState(ctx, ev, StateKeyImageBytes, part.InlineData.Data)
+						}
 						if getStringState(ctx, StateKeyInputType) == "" {
 							setState(ctx, ev, StateKeyInputType, RouteIngest)
 						}
@@ -119,7 +139,7 @@ func newRouterNode() *workflow.FunctionNode {
 			case "text", RouteSearch:
 				route = RouteSearch
 			default:
-				if len(getBytesState(ctx, StateKeyImageBytes)) > 0 {
+				if getStringState(ctx, StateKeyCardImageArtifact) != "" || len(getBytesState(ctx, StateKeyImageBytes)) > 0 {
 					route = RouteIngest
 				} else if getStringState(ctx, StateKeyTargetCardID) != "" {
 					route = RouteEmail
@@ -138,6 +158,8 @@ func newRouterNode() *workflow.FunctionNode {
 }
 
 // newVisionOCRNode creates the VisionOCRNode that extracts BusinessCard fields from an uploaded image.
+// It prioritizes loading the card image from ADK's versioned ArtifactService (ctx.Artifacts().Load / LoadVersion)
+// so binary blobs stay out of Session.State, falling back to StateKeyImageBytes or inline user content if needed.
 func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeVisionOCR,
@@ -145,13 +167,13 @@ func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 			ev := session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
-			imgBytes := getBytesState(ctx, StateKeyImageBytes)
+			imgBytes, mimeType := loadCardImageBytes(ctx)
 			userID := getStringState(ctx, StateKeyUserID)
 			if userID == "" {
 				userID = ctx.UserID()
 			}
 
-			card, err := extractCardFromImage(ctx, llm, imgBytes, userID)
+			card, err := extractCardFromImageWithMIME(ctx, llm, imgBytes, mimeType, userID)
 			if err != nil {
 				return nil, fmt.Errorf("vision OCR failed: %w", err)
 			}
@@ -164,7 +186,56 @@ func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 	)
 }
 
+// loadCardImageBytes retrieves the business card image bytes and MIME type from ADK's ArtifactService
+// (via StateKeyCardImageArtifact / StateKeyCardImageVersion), falling back to StateKeyImageBytes or UserContent.
+func loadCardImageBytes(ctx agent.Context) ([]byte, string) {
+	artifactName := getStringState(ctx, StateKeyCardImageArtifact)
+	if artifactName != "" && ctx.Artifacts() != nil {
+		version := getIntState(ctx, StateKeyCardImageVersion)
+		if version > 0 {
+			if loadResp, err := ctx.Artifacts().LoadVersion(ctx, artifactName, version); err == nil && loadResp != nil && loadResp.Part != nil && loadResp.Part.InlineData != nil {
+				mime := loadResp.Part.InlineData.MIMEType
+				if mime == "" {
+					mime = "image/jpeg"
+				}
+				return loadResp.Part.InlineData.Data, mime
+			}
+		}
+		if loadResp, err := ctx.Artifacts().Load(ctx, artifactName); err == nil && loadResp != nil && loadResp.Part != nil && loadResp.Part.InlineData != nil {
+			mime := loadResp.Part.InlineData.MIMEType
+			if mime == "" {
+				mime = "image/jpeg"
+			}
+			return loadResp.Part.InlineData.Data, mime
+		}
+	}
+
+	if imgBytes := getBytesState(ctx, StateKeyImageBytes); len(imgBytes) > 0 {
+		return imgBytes, "image/jpeg"
+	}
+
+	if ctx.UserContent() != nil {
+		for _, part := range ctx.UserContent().Parts {
+			if part != nil && part.InlineData != nil && len(part.InlineData.Data) > 0 {
+				mime := part.InlineData.MIMEType
+				if mime == "" {
+					mime = "image/jpeg"
+				}
+				return part.InlineData.Data, mime
+			}
+		}
+	}
+	return nil, "image/jpeg"
+}
+
 func extractCardFromImage(ctx context.Context, llm model.LLM, imgBytes []byte, userID string) (*models.BusinessCard, error) {
+	return extractCardFromImageWithMIME(ctx, llm, imgBytes, "image/jpeg", userID)
+}
+
+func extractCardFromImageWithMIME(ctx context.Context, llm model.LLM, imgBytes []byte, mimeType string, userID string) (*models.BusinessCard, error) {
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = "image/jpeg"
+	}
 	prompt := `請辨識這張名片圖片，並以純 JSON 格式輸出以下欄位：
 {
   "name": "姓名",
@@ -184,7 +255,7 @@ func extractCardFromImage(ctx context.Context, llm model.LLM, imgBytes []byte, u
 	if len(imgBytes) > 0 {
 		parts = append(parts, &genai.Part{
 			InlineData: &genai.Blob{
-				MIMEType: "image/jpeg",
+				MIMEType: mimeType,
 				Data:     imgBytes,
 			},
 		})

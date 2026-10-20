@@ -55,10 +55,11 @@ const dbConnectRetryInterval = 2 * time.Second
 
 // NewService returns the ADK session service for the selected backend.
 func NewService(ctx context.Context) (session.Service, error) {
-	switch sessionType {
+	backend := envOrDefault("SESSION_TYPE", sessionType)
+	switch strings.ToLower(strings.TrimSpace(backend)) {
 	case "cloud_sql":
 		return cloudSQLSessionService()
-	case "agent_platform_sessions":
+	case "agent_platform_sessions", "agent_engine", "vertexai":
 		return agentPlatformSessions(ctx)
 	default:
 		engineID := os.Getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")

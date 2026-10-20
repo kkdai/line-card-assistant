@@ -89,9 +89,16 @@ func main() {
 		log.Fatalf("Failed to create session service: %v", err)
 	}
 
+	// Select the artifact backend (in-memory locally, GCS when ARTIFACT_BUCKET_NAME or LOGS_BUCKET_NAME is set).
+	artifactService, err := sessions.NewArtifactService(ctx)
+	if err != nil {
+		log.Fatalf("Failed to create artifact service: %v", err)
+	}
+
 	config := &launcher.Config{
-		AgentLoader:    &appLoader{root: rootAgent},
-		SessionService: sessionService,
+		AgentLoader:     &appLoader{root: rootAgent},
+		SessionService:  sessionService,
+		ArtifactService: artifactService,
 	}
 
 	appURL := resolveAppURL()

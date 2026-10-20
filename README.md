@@ -10,7 +10,8 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 
 - **Dual-Channel Agent Platform & LINE Webhook Architecture (`adk_go` + `agent_runtime`)**:
   - **Root Agent Factory (`app.NewRootAgent`)**: Exposes the entire ADK 2.0 Graph Workflow as a standard `agent.Agent` (`line_card_assistant`) compatible with **Vertex AI Agent Runtime (`agentengine`)**, **ADK WebUI Playground (`webui`)**, and **Agent-to-Agent Protocol (`a2a` / `/.well-known/agent-card.json`)**, while preserving the standalone **LINE Webhook server (`cmd/server`)**.
-  - **Multi-Backend Managed Sessions (`sessions.NewService`)**: Seamlessly switches between in-memory sessions (`SESSION_TYPE=in_memory`), **Vertex AI Agent Engine Managed Sessions (`SESSION_TYPE=agent_engine` / `VertexAiEngineSessionService`)**, and **Cloud SQL PostgreSQL (`SESSION_TYPE=cloud_sql`)**.
+  - **Multi-Backend Managed Sessions (`sessions.NewService`)**: Seamlessly switches between in-memory sessions (`SESSION_TYPE=in_memory`), **Vertex AI Agent Engine Managed Sessions (`SESSION_TYPE=agent_engine` / `session/vertexai`)**, and **Cloud SQL PostgreSQL (`SESSION_TYPE=cloud_sql`)**, enabling **stateless cross-instance HITL Pause & Resume**.
+  - **GCS Artifact Storage (`sessions.NewArtifactService`)**: Offloads binary business card photos from `Session.State` into versioned **Google Cloud Storage Artifacts (`artifact/gcsartifact`)** (`ARTIFACT_BUCKET_NAME` / `LOGS_BUCKET_NAME`), storing only lightweight artifact references (`card_image_artifact`, `card_image_version`) in session state.
   - **Cloud Trace & OpenTelemetry Observability (`observability.go`)**: Automatically exports spans and structured logs to `telemetry.googleapis.com` via OTLP with Google ADC authentication.
 - **Multimodal Vision OCR (`VisionOCRNode`)**: Upload a business card photo in LINE to automatically extract structured fields (`Name`, `Title`, `Company`, `Email`, `Phone`, `Address`, `Website`, `TaxID`).
 - **ADK 2.0 Parallel Fan-Out / Fan-In Enrichment (`AddFanOut` / `AddFanIn`)**:
@@ -137,7 +138,9 @@ flowchart TD
 │   ├── appinfo.go                  # /app-info sublauncher exposing agent tree metadata for Evals
 │   └── appinfo_test.go
 ├── sessions/
-│   └── sessions.go                 # Multi-backend session factory (in_memory, agent_engine, cloud_sql)
+│   ├── sessions.go                 # Multi-backend session factory (in_memory, agent_engine, cloud_sql)
+│   ├── artifacts.go                # GCS / In-Memory Artifact service factory (artifact/gcsartifact)
+│   └── sessions_test.go            # Session & Artifact service unit tests
 ├── cmd/
 │   └── server/
 │       └── main.go                 # Standalone LINE Webhook HTTP server (/webhook, /healthz)
@@ -181,6 +184,8 @@ flowchart TD
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI location/region | `global` |
 | `AGENT_PLATFORM_API_KEY` | Optional Agent Platform / Vertex AI Express API Key | *(Uses Self-Identity ADC if omitted on Vertex AI)* |
 | `GOOGLE_API_KEY` | Optional Gemini Developer API Key | *(MockLLM if neither ADC nor API Key is set)* |
+| `SESSION_TYPE` | Session backend (`in_memory`, `agent_engine` / `agent_platform_sessions`, `cloud_sql`) | `in_memory` (auto `agent_engine` if `GOOGLE_CLOUD_AGENT_ENGINE_ID` is set) |
+| `ARTIFACT_BUCKET_NAME` | GCS bucket name for binary card photo artifacts (`artifact/gcsartifact`) | *(Falls back to `LOGS_BUCKET_NAME`, then `artifact.InMemoryService()`)* |
 
 ---
 

@@ -31,6 +31,8 @@ const (
 	StateKeyInputType           = "input_type"
 	StateKeyUserID              = "user_id"
 	StateKeyImageBytes          = "image_bytes"
+	StateKeyCardImageArtifact   = "card_image_artifact"
+	StateKeyCardImageVersion    = "card_image_version"
 	StateKeyTextInput           = "text_input"
 	StateKeyRecentMessages      = "recent_messages"
 	StateKeyTargetCardID        = "target_card_id"
@@ -72,15 +74,16 @@ type TurnResult struct {
 	Events           []*session.Event
 }
 
-// Engine coordinates ADK 2.0 workflow execution, session persistence, and HITL state per LINE user.
+// Engine coordinates ADK 2.0 workflow execution, session persistence, artifact storage, and HITL state per LINE user.
 type Engine struct {
-	cfg            *config.Config
-	cardStore      store.CardStore
-	llm            model.LLM
-	wf             *workflow.Workflow
-	wfAgent        agent.Agent
-	runner         *runner.Runner
-	sessionService session.Service
+	cfg             *config.Config
+	cardStore       store.CardStore
+	llm             model.LLM
+	wf              *workflow.Workflow
+	wfAgent         agent.Agent
+	runner          *runner.Runner
+	sessionService  session.Service
+	artifactService artifact.Service
 
 	mu             sync.RWMutex
 	pendingSession map[string]pendingHITL // userID -> active paused HITL session info
@@ -92,8 +95,30 @@ type pendingHITL struct {
 	InterruptID string
 }
 
-// NewEngine constructs the ADK 2.0 workflow engine backed by runner.Runner and session.InMemoryService.
-func NewEngine(cfg *config.Config, cardStore store.CardStore, llm model.LLM) (*Engine, error) {
+// EngineOption configures optional backend services on Engine.
+type EngineOption func(*engineOptions)
+
+type engineOptions struct {
+	sessionService  session.Service
+	artifactService artifact.Service
+}
+
+// WithSessionService overrides the default session.InMemoryService() on Engine.
+func WithSessionService(svc session.Service) EngineOption {
+	return func(o *engineOptions) {
+		o.sessionService = svc
+	}
+}
+
+// WithArtifactService overrides the default artifact.InMemoryService() on Engine.
+func WithArtifactService(svc artifact.Service) EngineOption {
+	return func(o *engineOptions) {
+		o.artifactService = svc
+	}
+}
+
+// NewEngine constructs the ADK 2.0 workflow engine backed by runner.Runner, session.Service, and artifact.Service.
+func NewEngine(cfg *config.Config, cardStore store.CardStore, llm model.LLM, opts ...EngineOption) (*Engine, error) {
 	if cfg == nil {
 		cfg = config.Load()
 	}
@@ -102,6 +127,13 @@ func NewEngine(cfg *config.Config, cardStore store.CardStore, llm model.LLM) (*E
 	}
 	if llm == nil {
 		llm = NewMockLLM()
+	}
+
+	var eOpts engineOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&eOpts)
+		}
 	}
 
 	edges, err := BuildEdges(cardStore, llm)
@@ -114,21 +146,35 @@ func NewEngine(cfg *config.Config, cardStore store.CardStore, llm model.LLM) (*E
 		return nil, fmt.Errorf("create workflow: %w", err)
 	}
 
+	var subAgents []agent.Agent
+	if enrichAgent, err := NewCompanyEnrichAgent(llm); err == nil && enrichAgent != nil {
+		subAgents = append(subAgents, enrichAgent)
+	}
+
 	wfAgent, err := workflowagent.New(workflowagent.Config{
 		Name:        "CardAssistantWorkflow",
 		Description: "LINE AI Business Card Assistant workflow orchestrating Vision OCR, parallel enrichment, HITL confirmation, and hybrid search.",
 		Edges:       edges,
+		SubAgents:   subAgents,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create workflow agent: %w", err)
 	}
 
-	sessionService := session.InMemoryService()
+	sessionService := eOpts.sessionService
+	if sessionService == nil {
+		sessionService = session.InMemoryService()
+	}
+	artifactService := eOpts.artifactService
+	if artifactService == nil {
+		artifactService = artifact.InMemoryService()
+	}
+
 	adkRunner, err := runner.New(runner.Config{
 		AppName:           appName,
 		Agent:             wfAgent,
 		SessionService:    sessionService,
-		ArtifactService:   artifact.InMemoryService(),
+		ArtifactService:   artifactService,
 		MemoryService:     memory.InMemoryService(),
 		AutoCreateSession: true,
 	})
@@ -137,15 +183,16 @@ func NewEngine(cfg *config.Config, cardStore store.CardStore, llm model.LLM) (*E
 	}
 
 	return &Engine{
-		cfg:            cfg,
-		cardStore:      cardStore,
-		llm:            llm,
-		wf:             wf,
-		wfAgent:        wfAgent,
-		runner:         adkRunner,
-		sessionService: sessionService,
-		pendingSession: make(map[string]pendingHITL),
-		recentMsgs:     make(map[string][]string),
+		cfg:             cfg,
+		cardStore:       cardStore,
+		llm:             llm,
+		wf:              wf,
+		wfAgent:         wfAgent,
+		runner:          adkRunner,
+		sessionService:  sessionService,
+		artifactService: artifactService,
+		pendingSession:  make(map[string]pendingHITL),
+		recentMsgs:      make(map[string][]string),
 	}, nil
 }
 
@@ -305,13 +352,72 @@ func (e *Engine) RecentUserMessages(userID string) []string {
 
 // HasPendingHITL reports whether userID currently has a workflow paused at HITLConfirmNode.
 func (e *Engine) HasPendingHITL(userID string) bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	p, ok := e.pendingSession[userID]
-	return ok && p.SessionID != "" && p.InterruptID != ""
+	if _, ok := e.resolvePendingHITL(context.Background(), userID); ok {
+		return true
+	}
+	return false
 }
 
+// resolvePendingHITL looks up an active paused HITL session for userID in the local in-memory cache first,
+// and falls back to scanning the backing session.Service so stateless / multi-instance deployments
+// (e.g., backed by session/vertexai or Cloud SQL) can resume across instances without local memory state.
+func (e *Engine) resolvePendingHITL(ctx context.Context, userID string) (pendingHITL, bool) {
+	if userID == "" {
+		userID = store.DefaultDemoUserID
+	}
+	e.mu.RLock()
+	p, ok := e.pendingSession[userID]
+	e.mu.RUnlock()
+	if ok && p.SessionID != "" && p.InterruptID != "" {
+		return p, true
+	}
+
+	if e.sessionService == nil {
+		return pendingHITL{}, false
+	}
+	listResp, err := e.sessionService.List(ctx, &session.ListRequest{
+		AppName: appName,
+		UserID:  userID,
+	})
+	if err != nil || listResp == nil {
+		return pendingHITL{}, false
+	}
+
+	for _, s := range listResp.Sessions {
+		if s == nil {
+			continue
+		}
+		activeID := readStringFromSession(s, StateKeyActiveInterruptID)
+		if activeID == "" {
+			// Some session.Service implementations omit state maps in List() summaries; fetch full session if needed.
+			if getResp, err := e.sessionService.Get(ctx, &session.GetRequest{
+				AppName:   appName,
+				UserID:    userID,
+				SessionID: s.ID(),
+			}); err == nil && getResp != nil && getResp.Session != nil {
+				activeID = readStringFromSession(getResp.Session, StateKeyActiveInterruptID)
+			}
+		}
+		if activeID != "" {
+			found := pendingHITL{
+				SessionID:   s.ID(),
+				InterruptID: activeID,
+			}
+			e.mu.Lock()
+			e.pendingSession[userID] = found
+			e.mu.Unlock()
+			return found, true
+		}
+	}
+	return pendingHITL{}, false
+}
+
+// DefaultCardImageArtifactName is the default filename used when storing uploaded business card photos in artifact.Service.
+const DefaultCardImageArtifactName = "business_card.jpg"
+
 // StartIngest starts a new card ingestion workflow run for an uploaded business card image.
+// Binary image bytes are persisted to the ADK ArtifactService (GCS in production, in-memory locally)
+// and only the lightweight artifact filename + version are stored in Session.State.
 func (e *Engine) StartIngest(ctx context.Context, userID string, imageBytes []byte, recentMessages []string) (*TurnResult, error) {
 	if userID == "" {
 		userID = store.DefaultDemoUserID
@@ -324,8 +430,27 @@ func (e *Engine) StartIngest(ctx context.Context, userID string, imageBytes []by
 	stateDelta := map[string]any{
 		StateKeyInputType:      RouteIngest,
 		StateKeyUserID:         userID,
-		StateKeyImageBytes:     imageBytes,
 		StateKeyRecentMessages: recentMessages,
+	}
+
+	// Persist binary card photo into ADK ArtifactService instead of bloating Session.State
+	if len(imageBytes) > 0 && e.artifactService != nil {
+		saveResp, err := e.artifactService.Save(ctx, &artifact.SaveRequest{
+			AppName:   appName,
+			UserID:    userID,
+			SessionID: sessionID,
+			FileName:  DefaultCardImageArtifactName,
+			Part:      genai.NewPartFromBytes(imageBytes, "image/jpeg"),
+		})
+		if err == nil && saveResp != nil {
+			stateDelta[StateKeyCardImageArtifact] = DefaultCardImageArtifactName
+			stateDelta[StateKeyCardImageVersion] = int(saveResp.Version)
+		} else {
+			// Fallback to inline bytes only if artifact save failed
+			stateDelta[StateKeyImageBytes] = imageBytes
+		}
+	} else if len(imageBytes) > 0 {
+		stateDelta[StateKeyImageBytes] = imageBytes
 	}
 
 	msg := &genai.Content{
@@ -350,9 +475,7 @@ func (e *Engine) ResumeHITL(ctx context.Context, userID string, userReply string
 		userID = store.DefaultDemoUserID
 	}
 
-	e.mu.RLock()
-	pending, ok := e.pendingSession[userID]
-	e.mu.RUnlock()
+	pending, ok := e.resolvePendingHITL(ctx, userID)
 	if !ok || pending.SessionID == "" || pending.InterruptID == "" {
 		return nil, fmt.Errorf("no pending HITL workflow found for user %q", userID)
 	}
