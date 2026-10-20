@@ -14,6 +14,7 @@ import (
 	"github.com/kkdai/line-card-assistant/internal/linebot"
 	"github.com/kkdai/line-card-assistant/internal/store"
 	"github.com/kkdai/line-card-assistant/internal/workflow"
+	"github.com/kkdai/line-card-assistant/sessions"
 )
 
 func main() {
@@ -34,7 +35,22 @@ func main() {
 		llm = workflow.NewMockLLM()
 	}
 
-	engine, err := workflow.NewEngine(cfg, cardStore, llm)
+	sessionService, err := sessions.NewService(ctx)
+	if err != nil {
+		slog.Warn("falling back to default in-memory session service", "err", err)
+	}
+	artifactService, err := sessions.NewArtifactService(ctx)
+	if err != nil {
+		slog.Warn("falling back to default in-memory artifact service", "err", err)
+	}
+
+	engine, err := workflow.NewEngine(
+		cfg,
+		cardStore,
+		llm,
+		workflow.WithSessionService(sessionService),
+		workflow.WithArtifactService(artifactService),
+	)
 	if err != nil {
 		slog.Error("failed to initialize ADK 2.0 workflow engine", "err", err)
 		os.Exit(1)

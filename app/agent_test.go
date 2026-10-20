@@ -127,3 +127,62 @@ func TestRootAgentDirectSearchExecution(t *testing.T) {
 		t.Errorf("expected carousel JSON output from root workflow agent on search query")
 	}
 }
+
+func TestRootAgentDirectImageArtifactIngestAndHITL(t *testing.T) {
+	ctx := context.Background()
+	cardStore := store.NewMemoryStore()
+	rootAgent, err := NewRootAgentWithDeps(cardStore, workflow.NewMockLLM())
+	if err != nil {
+		t.Fatalf("NewRootAgentWithDeps() error = %v", err)
+	}
+
+	sessionSvc := session.InMemoryService()
+	artifactSvc := artifact.InMemoryService()
+	r, err := runner.New(runner.Config{
+		AppName:           "app",
+		Agent:             rootAgent,
+		SessionService:    sessionSvc,
+		ArtifactService:   artifactSvc,
+		MemoryService:     memory.InMemoryService(),
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		t.Fatalf("runner.New() error = %v", err)
+	}
+
+	// Simulate uploading an image directly from ADK WebUI / Agent Engine Playground / A2A
+	imageData := []byte("fake-webui-uploaded-card-image")
+	msg := &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{
+			genai.NewPartFromBytes(imageData, "image/jpeg"),
+		},
+	}
+
+	var interruptID string
+	for ev, err := range r.Run(ctx, "webui-user", "webui-session-1", msg, agent.RunConfig{}) {
+		if err != nil {
+			t.Fatalf("r.Run(image) error = %v", err)
+		}
+		if ev != nil && ev.RequestedInput != nil && ev.RequestedInput.InterruptID != "" {
+			interruptID = ev.RequestedInput.InterruptID
+		}
+	}
+	if interruptID == "" {
+		t.Fatalf("expected rootAgent to pause at HITLConfirmNode and emit InterruptID")
+	}
+
+	// Verify RouterNode automatically persisted the uploaded image into ArtifactService
+	loaded, err := artifactSvc.Load(ctx, &artifact.LoadRequest{
+		AppName:   "app",
+		UserID:    "webui-user",
+		SessionID: "webui-session-1",
+		FileName:  workflow.DefaultCardImageArtifactName,
+	})
+	if err != nil {
+		t.Fatalf("expected uploaded image to be stored in ArtifactService: %v", err)
+	}
+	if loaded.Part == nil || loaded.Part.InlineData == nil || string(loaded.Part.InlineData.Data) != string(imageData) {
+		t.Errorf("unexpected artifact data in ArtifactService")
+	}
+}
