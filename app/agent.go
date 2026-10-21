@@ -36,7 +36,11 @@ const RootAgentName = "line_card_assistant"
 // and BusinessCard store.
 func NewRootAgent(ctx context.Context) (agent.Agent, error) {
 	cfg := config.Load()
-	cardStore := store.NewMemoryStore()
+	cardStore, err := store.NewStore(ctx)
+	if err != nil {
+		slog.Warn("falling back to MemoryStore due to store initialization error", "err", err)
+		cardStore = store.NewMemoryStore()
+	}
 
 	llm, err := workflow.NewLLMModel(ctx, cfg)
 	if err != nil {

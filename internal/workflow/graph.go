@@ -368,8 +368,27 @@ func (e *Engine) resolvePendingHITL(ctx context.Context, userID string) (pending
 	e.mu.RLock()
 	p, ok := e.pendingSession[userID]
 	e.mu.RUnlock()
-	if ok && p.SessionID != "" && p.InterruptID != "" {
-		return p, true
+	if ok && p.SessionID != "" {
+		if e.sessionService != nil {
+			if getResp, err := e.sessionService.Get(ctx, &session.GetRequest{
+				AppName:   appName,
+				UserID:    userID,
+				SessionID: p.SessionID,
+			}); err == nil && getResp != nil && getResp.Session != nil {
+				if activeID := readStringFromSession(getResp.Session, StateKeyActiveInterruptID); activeID != "" {
+					found := pendingHITL{
+						SessionID:   p.SessionID,
+						InterruptID: activeID,
+					}
+					e.mu.Lock()
+					e.pendingSession[userID] = found
+					e.mu.Unlock()
+					return found, true
+				}
+			}
+		} else if p.InterruptID != "" {
+			return p, true
+		}
 	}
 
 	if e.sessionService == nil {

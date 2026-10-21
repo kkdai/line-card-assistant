@@ -6,12 +6,16 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 
 ![Phase 2: Stateless Cross-Instance HITL & GCS Artifact Architecture](docs/architecture-phase2.png)
 
+![Phase 3: Decoupled LINE Webhook Gateway + Agent Runtime & Cloud SQL Architecture](docs/architecture-phase3.png)
+
 ---
 
 ## ✨ Key Features
 
-- **Dual-Channel Agent Platform & LINE Webhook Architecture (`adk_go` + `agent_runtime`)**:
+- **Dual-Channel & Decoupled Gateway Architecture (`adk_go` + `agent_runtime` + `internal/gateway`)**:
   - **Root Agent Factory (`app.NewRootAgent`)**: Exposes the entire ADK 2.0 Graph Workflow as a standard `agent.Agent` (`line_card_assistant`) compatible with **Vertex AI Agent Runtime (`agentengine`)**, **ADK WebUI Playground (`webui`)**, and **Agent-to-Agent Protocol (`a2a` / `/.well-known/agent-card.json`)**, while preserving the standalone **LINE Webhook server (`cmd/server`)**.
+  - **Decoupled Cloud Run LINE Webhook Gateway (`internal/gateway.Client`)**: When `AGENT_RUNTIME_URL` is set, `cmd/server` operates as a lightweight, stateless **LINE Webhook Gateway** that verifies LINE signatures (`X-Line-Signature`), downloads images from the LINE Blob API, and forwards workflow invocations (`StartIngest`, `ResumeHITL`, `RunSearch`, `RunEmailDraft`) over HTTPS with Google Cloud ADC authentication to the remote Agent Runtime (`/api/apps/{app}/users/{user}/sessions`, `/api/run`).
+  - **Cloud SQL PostgreSQL Business Card Store (`internal/store.PostgresStore`)**: Persists verified `BusinessCard` records in **Cloud SQL PostgreSQL (`gorm.io/driver/postgres`)** via `store.NewStore(ctx)` (`CARD_STORE_TYPE=cloud_sql` / `DATABASE_URL` / `INSTANCE_CONNECTION_NAME`), supporting upserts, duplicate detection, structured + semantic `HybridSearch`, and token-scored `BroadSearch` with automatic fallback to `MemoryStore` in local Dry-Run environments.
   - **Multi-Backend Managed Sessions (`sessions.NewService`)**: Seamlessly switches between in-memory sessions (`SESSION_TYPE=in_memory`), **Vertex AI Agent Engine Managed Sessions (`SESSION_TYPE=agent_engine` / `session/vertexai`)**, and **Cloud SQL PostgreSQL (`SESSION_TYPE=cloud_sql`)**, enabling **stateless cross-instance HITL Pause & Resume**.
   - **GCS Artifact Storage (`sessions.NewArtifactService`)**: Offloads binary business card photos from `Session.State` into versioned **Google Cloud Storage Artifacts (`artifact/gcsartifact`)** (`ARTIFACT_BUCKET_NAME` / `LOGS_BUCKET_NAME`), storing only lightweight artifact references (`card_image_artifact`, `card_image_version`) in session state.
   - **Cloud Trace & OpenTelemetry Observability (`observability.go`)**: Automatically exports spans and structured logs to `telemetry.googleapis.com` via OTLP with Google ADC authentication.
@@ -188,6 +192,10 @@ flowchart TD
 | `GOOGLE_API_KEY` | Optional Gemini Developer API Key | *(MockLLM if neither ADC nor API Key is set)* |
 | `SESSION_TYPE` | Session backend (`in_memory`, `agent_engine` / `agent_platform_sessions`, `cloud_sql`) | `in_memory` (auto `agent_engine` if `GOOGLE_CLOUD_AGENT_ENGINE_ID` is set) |
 | `ARTIFACT_BUCKET_NAME` | GCS bucket name for binary card photo artifacts (`artifact/gcsartifact`) | *(Falls back to `LOGS_BUCKET_NAME`, then `artifact.InMemoryService()`)* |
+| `CARD_STORE_TYPE` | Business card DB backend (`memory`, `postgres`, `cloud_sql`) | Auto-detects Postgres when `DATABASE_URL` or `INSTANCE_CONNECTION_NAME` is set |
+| `DATABASE_URL` | PostgreSQL connection string for `PostgresStore` (`CARD_STORE_DSN` / `POSTGRES_DSN`) | *(Falls back to `INSTANCE_CONNECTION_NAME` + `DB_USER` + `DB_PASS` + `DB_NAME`)* |
+| `AGENT_RUNTIME_URL` | Remote ADK REST / Agent Runtime base URL for decoupled Gateway mode | *(Runs local all-in-one Engine when unset)* |
+| `AGENT_RUNTIME_APP_NAME` | Target ADK app name when running in decoupled Gateway mode | `app` |
 
 ---
 

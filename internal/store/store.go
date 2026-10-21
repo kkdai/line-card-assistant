@@ -16,6 +16,7 @@ type CardStore interface {
 	GetByID(ctx context.Context, id string) (*models.BusinessCard, error)
 	CheckDuplicate(ctx context.Context, userID, name, company, email string) (*models.BusinessCard, bool, error)
 	HybridSearch(ctx context.Context, filter models.SearchFilter) ([]*models.BusinessCard, error)
+	BroadSearch(ctx context.Context, userID string, keywords []string) ([]*models.BusinessCard, error)
 	ListByUser(ctx context.Context, userID string) ([]*models.BusinessCard, error)
 }
 
