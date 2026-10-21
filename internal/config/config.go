@@ -20,6 +20,9 @@ type Config struct {
 	GoogleCloudProject     string
 	GoogleCloudLocation    string
 	ModelName              string
+	AgentRuntimeURL        string
+	AgentRuntimeAppName    string
+	AgentRuntimeUseADC     bool
 }
 
 // Load reads environment variables and returns a populated Config.
@@ -68,6 +71,17 @@ func Load() *Config {
 		}
 	}
 
+	agentRuntimeURL := firstNonEmpty(
+		os.Getenv("AGENT_RUNTIME_URL"),
+		os.Getenv("AGENT_RUNTIME_ENDPOINT"),
+	)
+	agentRuntimeAppName := firstNonEmpty(
+		os.Getenv("AGENT_RUNTIME_APP_NAME"),
+		"app",
+	)
+	useADCEnv := strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_RUNTIME_USE_ADC")))
+	agentRuntimeUseADC := useADCEnv == "true" || useADCEnv == "1" || (useADCEnv == "" && strings.HasPrefix(agentRuntimeURL, "https://"))
+
 	return &Config{
 		Port: port,
 		LineChannelSecret: firstNonEmpty(
@@ -83,6 +97,9 @@ func Load() *Config {
 		GoogleCloudProject:  project,
 		GoogleCloudLocation: location,
 		ModelName:           modelName,
+		AgentRuntimeURL:     agentRuntimeURL,
+		AgentRuntimeAppName: agentRuntimeAppName,
+		AgentRuntimeUseADC:  agentRuntimeUseADC,
 	}
 }
 

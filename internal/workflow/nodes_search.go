@@ -181,13 +181,7 @@ func newBroadSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 				keywords = append(keywords, extractKeywordsHeuristic(rawText)...)
 			}
 
-			var cards []*models.BusinessCard
-			var err error
-			if memStore, ok := cardStore.(*store.MemoryStore); ok {
-				cards, err = memStore.BroadSearch(ctx, userID, keywords)
-			} else {
-				cards, err = cardStore.ListByUser(ctx, userID)
-			}
+			cards, err := cardStore.BroadSearch(ctx, userID, keywords)
 			if err != nil {
 				return nil, fmt.Errorf("broad search failed: %w", err)
 			}
