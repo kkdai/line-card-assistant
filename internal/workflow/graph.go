@@ -693,8 +693,21 @@ func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, _ 
 }
 
 func (m *MockLLM) respondToPrompt(prompt string) string {
+	lowerPrompt := strings.ToLower(prompt)
 	switch {
 	case strings.Contains(prompt, "請辨識這張名片圖片") || strings.Contains(prompt, "raw_ocr"):
+		if strings.Contains(lowerPrompt, "david.chen") || strings.Contains(lowerPrompt, "appier") || strings.Contains(prompt, "陳建宏") || strings.Contains(lowerPrompt, "promotion") {
+			return `{
+  "name": "陳建宏 (David Chen)",
+  "title": "Chief Technology Officer (CTO)",
+  "company": "Appier (沛星互動科技)",
+  "email": "david.chen@appier.example.com",
+  "phone": "0922-888-168",
+  "address": "台北市信義區松仁路100號",
+  "website": "https://www.appier.com",
+  "raw_ocr": "Appier 沛星互動科技\n陳建宏 David Chen\nChief Technology Officer (CTO)\n0922-888-168\ndavid.chen@appier.example.com"
+}`
+		}
 		return `{
   "name": "王大明 (Ming Wang)",
   "title": "資深技術經理",
@@ -707,6 +720,12 @@ func (m *MockLLM) respondToPrompt(prompt string) string {
 }`
 
 	case strings.Contains(prompt, "company_info") || strings.Contains(prompt, "請查詢此公司的背景"):
+		if strings.Contains(lowerPrompt, "appier") || strings.Contains(prompt, "沛星") {
+			return `{
+  "company_info": "Appier（沛星互動科技）是一家以 AI 為核心的跨國 SaaS 科技公司，專注於 MarTech、AdTech 與企業級生成式 AI 決策解決方案。",
+  "tags": ["AI", "MarTech", "SaaS", "Enterprise"]
+}`
+		}
 		return `{
   "company_info": "台灣人工智慧實驗室（Taiwan AI Labs）專注於醫療 AI、繁體中文大型語言模型與可信任人工智慧研發。為台灣極具代表性的前瞻 AI 研究機構。",
   "tags": ["AI", "LLM", "HealthTech", "Taiwan"]
@@ -734,6 +753,28 @@ func (m *MockLLM) respondToPrompt(prompt string) string {
 		return `{"keywords":[],"company":"","title":"","tag":""}`
 
 	case strings.Contains(prompt, "破冰跟進信") || strings.Contains(prompt, "Follow-up Email"):
+		if strings.Contains(prompt, "林雅婷") || strings.Contains(lowerPrompt, "google cloud") {
+			return `主旨：很高興在 2026 Cloud Summit Taipei 認識您 — 期待與 Google Cloud Taiwan 進一步交流 AI 應用
+
+林雅婷 (Yating Lin) Senior AI Solutions Architect 您好：
+
+很高興日前在「2026 Cloud Summit Taipei」與您深入交流並交換名片！非常佩服 Google Cloud Taiwan 在企業雲端運算、Gemini AI 與 Vertex AI 解決方案上的卓越技術與領先實踐。
+
+希望下週能有機會安排 15 分鐘的線上會議或咖啡交流，進一步探討雙方在 AI Agent 與雲端架構上的潛在合作機會。
+
+祝 商祺`
+		}
+		if strings.Contains(prompt, "王大明") || strings.Contains(lowerPrompt, "taiwan ai labs") {
+			return `主旨：很高興在 2026 Cloud Summit Taipei 認識您 — 期待與台灣人工智慧實驗室進一步交流合作
+
+王大明 (Ming Wang) 您好：
+
+很高興日前在「2026 Cloud Summit Taipei」與您深入交流並交換名片！非常佩服台灣人工智慧實驗室 (Taiwan AI Labs) 在繁體中文大型語言模型與可信任 AI 研發上的卓越成果。
+
+希望下週能有機會安排 15 分鐘的線上會議或咖啡交流，進一步探討雙方潛在的合作機會。
+
+祝 商祺`
+		}
 		return `主旨：很高興在活動中認識您 — 期待未來進一步交流合作
 
 您好：
@@ -759,8 +800,15 @@ func extractPromptText(req *model.LLMRequest) string {
 			continue
 		}
 		for _, p := range c.Parts {
-			if p != nil && p.Text != "" {
+			if p == nil {
+				continue
+			}
+			if p.Text != "" {
 				sb.WriteString(p.Text)
+				sb.WriteByte('\n')
+			}
+			if p.InlineData != nil && len(p.InlineData.Data) > 0 {
+				sb.WriteString(string(p.InlineData.Data))
 				sb.WriteByte('\n')
 			}
 		}

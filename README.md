@@ -8,6 +8,8 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 
 ![Phase 3: Decoupled LINE Webhook Gateway + Agent Runtime & Cloud SQL Architecture](docs/architecture-phase3.png)
 
+![Phase 4: ADK 2.0 Go Agent Evaluation & Quality Flywheel (`agents-cli eval`)](docs/architecture-phase4.png)
+
 ---
 
 ## ✨ Key Features
@@ -143,6 +145,12 @@ flowchart TD
 ├── appinfo/
 │   ├── appinfo.go                  # /app-info sublauncher exposing agent tree metadata for Evals
 │   └── appinfo_test.go
+├── eval/
+│   ├── eval_config.yaml            # agents-cli eval metrics & custom evaluator configuration
+│   ├── metrics.py                  # Custom Python trajectory & response quality evaluators
+│   ├── eval_test.go                # Native Go multi-turn workflow trajectory & AppInfo eval suite
+│   └── datasets/
+│       └── basic-dataset.json      # 6-case golden dataset covering OCR, Dedup, HITL, Search & Email
 ├── sessions/
 │   ├── sessions.go                 # Multi-backend session factory (in_memory, agent_engine, cloud_sql)
 │   ├── artifacts.go                # GCS / In-Memory Artifact service factory (artifact/gcsartifact)
@@ -272,3 +280,22 @@ make local-backend
 make line-server
 # Health Check: curl http://localhost:8080/healthz
 ```
+
+### 5. Run the Phase 4 Agent Evaluation Suite (`agents-cli eval` Quality Flywheel)
+
+```bash
+# Run both `agents-cli eval run` (generate + grade) and the native Go trajectory tests:
+make eval
+
+# Or run individual Quality Flywheel steps:
+DRY_RUN=true agents-cli eval generate --dataset eval/datasets/basic-dataset.json
+DRY_RUN=true agents-cli eval grade --traces artifacts/traces/traces_<timestamp>.json --config eval/eval_config.yaml
+agents-cli eval compare --baseline artifacts/grade_results/results_<baseline>.json --candidate artifacts/grade_results/results_<candidate>.json
+```
+
+| Evaluator Metric (`eval/eval_config.yaml`) | Coverage | Score |
+| :--- | :--- | :--- |
+| `workflow_trajectory_accuracy` | Verifies node execution order (`[RouterNode]` $\rightarrow$ `[VisionOCRNode]` $\rightarrow$ Fan-Out `[CleanAndDedupNode]`, `[CompanyEnrichNode]`, `[ContextMatchNode]` $\rightarrow$ `[HITLConfirmNode]`, `[HybridSearchNode]` $\rightarrow$ `[BroadSearchNode]`) & `state_delta` keys | **1.0000** (6/6) |
+| `ocr_and_enrichment_quality` | Validates extracted `BusinessCard` fields, Taiwan phone normalization (`+886-912-345-678`), `CompanyInfo`, `Tags`, and `MetContext` | **1.0000** (6/6) |
+| `duplicate_and_hitl_precision` | Validates `IsDuplicate=true` promotion detection (`VP of Engineering` $\rightarrow$ `Chief Technology Officer (CTO)`), `adk_request_input` pause, `ApplyEditNode` loop, and `SaveCardNode` persistence | **1.0000** (6/6) |
+| `search_and_email_grounding` | Validates `QueryIntentNode` filter rewrite, `BroadSearchNode` fallback when `HybridSearchNode` returns 0 hits, and context-grounded icebreaker email generation | **1.0000** (6/6) |

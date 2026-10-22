@@ -1,0 +1,66 @@
+# LINE Card Assistant (ADK 2.0 Go) — agents-cli eval Configuration
+# Run via:
+#   DRY_RUN=true agents-cli eval run
+#   agents-cli eval generate -i eval/datasets/basic-dataset.json
+#   agents-cli eval grade <traces_file> -c eval/eval_config.yaml
+
+metrics_to_run:
+  - workflow_trajectory_accuracy
+  - ocr_and_enrichment_quality
+  - duplicate_and_hitl_precision
+  - search_and_email_grounding
+
+custom_metrics:
+  - name: workflow_trajectory_accuracy
+    execution: local
+    custom_function: |
+      import importlib.util, pathlib
+      _mod_path = pathlib.Path("eval/metrics.py").resolve()
+      _spec = importlib.util.spec_from_file_location("eval_metrics", _mod_path)
+      _mod = importlib.util.module_from_spec(_spec)
+      _spec.loader.exec_module(_mod)
+      def evaluate(instance):
+          return _mod.evaluate_workflow_trajectory(instance)
+
+  - name: ocr_and_enrichment_quality
+    execution: local
+    custom_function: |
+      import importlib.util, pathlib
+      _mod_path = pathlib.Path("eval/metrics.py").resolve()
+      _spec = importlib.util.spec_from_file_location("eval_metrics", _mod_path)
+      _mod = importlib.util.module_from_spec(_spec)
+      _spec.loader.exec_module(_mod)
+      def evaluate(instance):
+          return _mod.evaluate_ocr_and_enrichment_quality(instance)
+
+  - name: duplicate_and_hitl_precision
+    execution: local
+    custom_function: |
+      import importlib.util, pathlib
+      _mod_path = pathlib.Path("eval/metrics.py").resolve()
+      _spec = importlib.util.spec_from_file_location("eval_metrics", _mod_path)
+      _mod = importlib.util.module_from_spec(_spec)
+      _spec.loader.exec_module(_mod)
+      def evaluate(instance):
+          return _mod.evaluate_duplicate_and_hitl_precision(instance)
+
+  - name: search_and_email_grounding
+    execution: local
+    custom_function: |
+      import importlib.util, pathlib
+      _mod_path = pathlib.Path("eval/metrics.py").resolve()
+      _spec = importlib.util.spec_from_file_location("eval_metrics", _mod_path)
+      _mod = importlib.util.module_from_spec(_spec)
+      _spec.loader.exec_module(_mod)
+      def evaluate(instance):
+          return _mod.evaluate_search_and_email_grounding(instance)
+
+  # Optional Vertex AI LLM-as-a-Judge rubric metric (can be enabled in metrics_to_run when grading against Vertex Eval Service)
+  - name: card_assistant_llm_rubric
+    prompt_template: |
+      Evaluate whether the LINE Business Card Assistant response accurately fulfills the user's request:
+      Prompt: {prompt}
+      Final response: {response}
+      Full trace: {agent_data}
+      Return JSON: {"score": <1|2|3|4|5>, "explanation": "<reason>"}
+    judge_model_sampling_count: 1
