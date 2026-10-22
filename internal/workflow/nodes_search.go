@@ -41,6 +41,7 @@ func newQueryIntentNode(llm model.LLM) *workflow.FunctionNode {
 
 			filter := parseSearchIntent(ctx, llm, userID, query)
 			setState(ctx, ev, StateKeySearchFilter, filter)
+			setNodeTrace(ev, NodeQueryIntent, fmt.Sprintf("keywords=%v tag=%s", filter.Keywords, filter.Tag))
 			ev.Output = filter
 			return ev, nil
 		},
@@ -138,6 +139,7 @@ func newHybridSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 			}
 
 			setState(ctx, ev, StateKeySearchResults, cards)
+			setNodeTrace(ev, NodeHybridSearch, fmt.Sprintf("matches=%d", len(cards)))
 			if len(cards) > 0 {
 				ev.Routes = []string{RouteFound}
 			} else {
@@ -187,6 +189,7 @@ func newBroadSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 			}
 
 			setState(ctx, ev, StateKeySearchResults, cards)
+			setNodeTrace(ev, NodeBroadSearch, fmt.Sprintf("matches=%d", len(cards)))
 			ev.Output = cards
 			return ev, nil
 		},

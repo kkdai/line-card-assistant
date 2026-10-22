@@ -1,0 +1,229 @@
+{
+  "metadata": {
+    "name": "line-card-assistant-phase4-eval-dataset",
+    "description": "ADK 2.0 Go Graph Workflow evaluation dataset covering OCR Fan-Out/Fan-In ingestion, Duplicate & Promotion detection, HITL Edit/Confirm loop, Hybrid Search & Broad Fallback, and personalized Icebreaker Email drafting.",
+    "version": "1.0.0"
+  },
+  "eval_cases": [
+    {
+      "eval_case_id": "ingest_fanout_fanin_ocr",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "ingest"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "王大明 (Ming Wang) | 資深技術經理 | 台灣人工智慧實驗室 (Taiwan AI Labs) | +886-912-345-678 | ming.wang@ailabs.example.tw | 2026 Cloud Summit Taipei"
+            }
+          ]
+        }
+      },
+      "custom_Properties": {
+        "scenario": "ingest_fanout_fanin_ocr",
+        "expected_route": "ingest",
+        "expected_nodes": [
+          "RouterNode",
+          "VisionOCRNode",
+          "CleanAndDedupNode",
+          "CompanyEnrichNode",
+          "ContextMatchNode",
+          "JoinPreviewNode",
+          "BuildPreviewNode",
+          "HITLConfirmNode"
+        ],
+        "expected_phone": "+886-912-345-678",
+        "expected_company": "台灣人工智慧實驗室 (Taiwan AI Labs)",
+        "expected_hitl_pause": true
+      }
+    },
+    {
+      "eval_case_id": "ingest_duplicate_promotion_detection",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "action=ingest&card=promotion_david_chen_appier"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "🔄 重複名片更新提醒 | 📈 偵測到職稱異動（原職稱：VP of Engineering） | 陳建宏 (David Chen) | Chief Technology Officer (CTO) | Appier (沛星互動科技) | +886-922-888-168"
+            }
+          ]
+        }
+      },
+      "custom_Properties": {
+        "scenario": "duplicate_promotion_detection",
+        "expected_route": "ingest",
+        "expected_nodes": [
+          "RouterNode",
+          "VisionOCRNode",
+          "CleanAndDedupNode",
+          "CompanyEnrichNode",
+          "ContextMatchNode",
+          "JoinPreviewNode",
+          "BuildPreviewNode",
+          "HITLConfirmNode"
+        ],
+        "expected_duplicate": true,
+        "expected_old_title": "VP of Engineering",
+        "expected_new_title": "Chief Technology Officer (CTO)"
+      }
+    },
+    {
+      "eval_case_id": "hitl_edit_and_confirm_loop",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "action=ingest&edit=職稱改為技術副總，場合改為 COMPUTEX 2026 AI 論壇&hitl_action=confirm"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "✅ 名片已成功儲存！ | 王大明 (Ming Wang) | 職稱：技術副總 | 台灣人工智慧實驗室 (Taiwan AI Labs) | +886-912-345-678 | ✉️ 破冰跟進信草稿"
+            }
+          ]
+        }
+      },
+      "custom_Properties": {
+        "scenario": "hitl_edit_and_confirm_loop",
+        "expected_route": "ingest",
+        "expected_nodes": [
+          "RouterNode",
+          "VisionOCRNode",
+          "CleanAndDedupNode",
+          "CompanyEnrichNode",
+          "ContextMatchNode",
+          "JoinPreviewNode",
+          "BuildPreviewNode",
+          "HITLConfirmNode",
+          "ApplyEditNode",
+          "SaveCardNode"
+        ],
+        "expected_edited_title": "技術副總",
+        "expected_edited_context": "COMPUTEX 2026 AI 論壇",
+        "expected_saved": true
+      }
+    },
+    {
+      "eval_case_id": "search_hybrid_cloud_summit_ai",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "幫我找上週在 Cloud Summit 認識做 AI 的人"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "carousel | 林雅婷 (Yating Lin) | Google Cloud Taiwan | 陳建宏 (David Chen) | Appier (沛星互動科技) | 2026 Cloud Summit Taipei"
+            }
+          ]
+        }
+      },
+      "custom_Properties": {
+        "scenario": "search_hybrid_found",
+        "expected_route": "search",
+        "expected_nodes": [
+          "RouterNode",
+          "QueryIntentNode",
+          "HybridSearchNode",
+          "FormatCarouselNode"
+        ],
+        "expected_contacts": [
+          "林雅婷 (Yating Lin)",
+          "陳建宏 (David Chen)"
+        ]
+      }
+    },
+    {
+      "eval_case_id": "search_broad_fallback_semiconductor",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "請問有沒有新竹科學園區做 AI Chip 晶片的聯絡人？"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "carousel | 張志豪 (Howard Chang) | Director of IC Design | 台積電 (TSMC) | SEMICON Taiwan 2026"
+            }
+          ]
+        }
+      },
+      "custom_Properties": {
+        "scenario": "search_broad_fallback",
+        "expected_route": "search",
+        "expected_nodes": [
+          "RouterNode",
+          "QueryIntentNode",
+          "HybridSearchNode",
+          "BroadSearchNode",
+          "FormatCarouselNode"
+        ],
+        "expected_contacts": [
+          "張志豪 (Howard Chang)"
+        ]
+      }
+    },
+    {
+      "eval_case_id": "email_draft_icebreaker_grounding",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "action=draft_email&card_id=card-seed-1"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "主旨：很高興在 2026 Cloud Summit Taipei 認識您 | 林雅婷 (Yating Lin) | Google Cloud Taiwan | Gemini AI | Vertex AI"
+            }
+          ]
+        }
+      },
+      "custom_Properties": {
+        "scenario": "email_draft_icebreaker",
+        "expected_route": "email",
+        "expected_nodes": [
+          "RouterNode",
+          "EmailDraftNode"
+        ],
+        "expected_keywords": [
+          "林雅婷",
+          "2026 Cloud Summit Taipei",
+          "Google Cloud Taiwan"
+        ]
+      }
+    }
+  ]
+}

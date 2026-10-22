@@ -8,3 +8,7 @@ bin/
 *.out
 .DS_Store
 .env
+.google-agents-cli/
+artifacts/
+eval/**/__pycache__/
+*.pyc

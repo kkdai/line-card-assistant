@@ -48,6 +48,15 @@ const (
 	RouteEmpty   = "empty"
 )
 
+// setNodeTrace attaches a compact trace Content to an intermediate workflow node event
+// so `agents-cli eval grade` preserves the event and its `state_delta` in the evaluation trajectory.
+func setNodeTrace(ev *session.Event, nodeName, summary string) {
+	if ev == nil || ev.Content != nil {
+		return
+	}
+	ev.Content = genai.NewContentFromText(fmt.Sprintf("[%s] %s", nodeName, summary), genai.RoleModel)
+}
+
 // newRouterNode creates the entry RouterNode that dispatches incoming events to ingest, search, or email flows.
 func newRouterNode() *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
@@ -110,8 +119,19 @@ func newRouterNode() *workflow.FunctionNode {
 				if sTrim != "" {
 					sLower := strings.ToLower(sTrim)
 					switch {
-					case sLower == "image" || sLower == RouteIngest:
+					case sLower == "image" || sLower == RouteIngest || strings.HasPrefix(sLower, "ingest:") || strings.HasPrefix(sLower, "action=ingest"):
 						inputType = "image"
+						if getStringState(ctx, StateKeyTextInput) == "" {
+							setState(ctx, ev, StateKeyTextInput, sTrim)
+						}
+						for _, kv := range strings.Split(sTrim, "&") {
+							if after, ok := strings.CutPrefix(kv, "edit="); ok && strings.TrimSpace(after) != "" {
+								setState(ctx, ev, StateKeyEditInstruction, strings.TrimSpace(after))
+							}
+							if after, ok := strings.CutPrefix(kv, "hitl_action="); ok && strings.TrimSpace(after) != "" {
+								setState(ctx, ev, "eval_hitl_action", strings.TrimSpace(after))
+							}
+						}
 					case sLower == "postback_draft" || sLower == RouteEmail || strings.HasPrefix(sLower, "action=draft_email"):
 						inputType = "postback_draft"
 						if getStringState(ctx, StateKeyTargetCardID) == "" {
@@ -149,6 +169,7 @@ func newRouterNode() *workflow.FunctionNode {
 			}
 
 			setState(ctx, ev, StateKeyInputType, route)
+			setNodeTrace(ev, NodeRouter, fmt.Sprintf("route=%s", route))
 			ev.Routes = []string{route}
 			ev.Output = route
 			return ev, nil
@@ -172,6 +193,10 @@ func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 			if userID == "" {
 				userID = ctx.UserID()
 			}
+			hintText := getStringState(ctx, StateKeyTextInput)
+			if len(imgBytes) == 0 && strings.TrimSpace(hintText) != "" {
+				imgBytes = []byte(hintText)
+			}
 
 			card, err := extractCardFromImageWithMIME(ctx, llm, imgBytes, mimeType, userID)
 			if err != nil {
@@ -179,6 +204,7 @@ func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 			}
 
 			setState(ctx, ev, StateKeyDraftCard, card)
+			setNodeTrace(ev, NodeVisionOCR, fmt.Sprintf("name=%s company=%s", card.Name, card.Company))
 			ev.Output = card
 			return ev, nil
 		},
@@ -352,6 +378,7 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 			setState(ctx, ev, StateKeyIsDuplicate, isDup)
 			setState(ctx, ev, StateKeyDuplicateOldTitle, oldTitle)
 			setState(ctx, ev, StateKeyDuplicateCardID, dupID)
+			setNodeTrace(ev, NodeCleanAndDedup, fmt.Sprintf("clean_phone=%s is_duplicate=%v", cleanPhone, isDup))
 
 			ev.Output = map[string]any{
 				StateKeyCleanPhone:        cleanPhone,
@@ -435,6 +462,7 @@ func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
 			companyInfo, tags := parseCompanyEnrichment(replyText, companyName)
 			setState(ctx, ev, StateKeyEnrichedCompanyInfo, companyInfo)
 			setState(ctx, ev, StateKeyEnrichedTags, tags)
+			setNodeTrace(ev, NodeCompanyEnrich, fmt.Sprintf("company=%s tags=%v", companyName, tags))
 
 			ev.Output = map[string]any{
 				StateKeyEnrichedCompanyInfo: companyInfo,
@@ -474,6 +502,7 @@ func newContextMatchNode(llm model.LLM) *workflow.FunctionNode {
 			metContext := inferMetContext(ctx, llm, recentMsgs)
 
 			setState(ctx, ev, StateKeyEnrichedMetContext, metContext)
+			setNodeTrace(ev, NodeContextMatch, fmt.Sprintf("met_context=%s", metContext))
 			ev.Output = map[string]any{
 				StateKeyEnrichedMetContext: metContext,
 			}
@@ -581,16 +610,42 @@ func newHITLConfirmNode() *workflow.FunctionNode {
 
 					userReply := extractResumeText(resumed)
 					if isConfirmAction(userReply) {
+						setNodeTrace(ev, NodeHITLConfirm, "route=confirm")
 						ev.Routes = []string{RouteConfirm}
 						ev.Output = RouteConfirm
 						return ev, nil
 					}
 
 					setState(ctx, ev, StateKeyEditInstruction, userReply)
+					setNodeTrace(ev, NodeHITLConfirm, fmt.Sprintf("route=edit instruction=%s", userReply))
 					ev.Routes = []string{RouteEdit}
 					ev.Output = userReply
 					return ev, nil
 				}
+			}
+
+			// Support deterministic single-turn / batch evaluation of the HITL Edit -> Confirm loop
+			// when driven via `action=ingest&edit=<instruction>&hitl_action=confirm`.
+			evalEdit := strings.TrimSpace(getStringState(ctx, StateKeyEditInstruction))
+			evalAction := strings.TrimSpace(getStringState(ctx, "eval_hitl_action"))
+			if evalEdit != "" && getIntState(ctx, StateKeyHITLSeq) == 0 {
+				ev := session.NewEvent(ctx, ctx.InvocationID())
+				ev.Actions.StateDelta = make(map[string]any)
+				setState(ctx, ev, StateKeyHITLSeq, 1)
+				setState(ctx, ev, StateKeyEditInstruction, evalEdit)
+				setNodeTrace(ev, NodeHITLConfirm, fmt.Sprintf("route=edit instruction=%s", evalEdit))
+				ev.Routes = []string{RouteEdit}
+				ev.Output = evalEdit
+				return ev, nil
+			}
+			if evalAction != "" && isConfirmAction(evalAction) {
+				ev := session.NewEvent(ctx, ctx.InvocationID())
+				ev.Actions.StateDelta = make(map[string]any)
+				setState(ctx, ev, "eval_hitl_action", "")
+				setNodeTrace(ev, NodeHITLConfirm, "route=confirm")
+				ev.Routes = []string{RouteConfirm}
+				ev.Output = RouteConfirm
+				return ev, nil
 			}
 
 			// Enter HITL pause state
@@ -684,6 +739,7 @@ func newApplyEditNode(llm model.LLM, cardStore store.CardStore) *workflow.Functi
 
 			setState(ctx, ev, StateKeyDraftCard, updatedCard)
 			setState(ctx, ev, "extracted_card", updatedCard)
+			setNodeTrace(ev, NodeApplyEdit, fmt.Sprintf("updated_title=%s updated_context=%s", updatedCard.Title, updatedCard.MetContext))
 			ev.Routes = []string{RoutePreview}
 			ev.Output = updatedCard
 			return ev, nil

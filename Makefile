@@ -78,6 +78,11 @@ setup-dev-env:
 test:
 	go test -v -tags=e2e ./...
 
+# Run agents-cli eval suite (Quality Flywheel: generate + grade + Go trajectory suite)
+eval:
+	DRY_RUN=true agents-cli eval run --config eval/eval_config.yaml
+	go test -v ./eval/...
+
 # Run load tests (requires server running on port 8000)
 # Server auto-loads .env on startup
 # Usage: make load-test [DURATION=30s] [USERS=10] [RAMP=2]
