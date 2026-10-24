@@ -693,10 +693,56 @@ func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, _ 
 }
 
 func (m *MockLLM) respondToPrompt(prompt string) string {
-	lowerPrompt := strings.ToLower(prompt)
+	nodePrompt := prompt
+	if idx := strings.LastIndex(prompt, "[Current Node:"); idx >= 0 {
+		nodePrompt = prompt[idx:]
+	}
+	lowerNodePrompt := strings.ToLower(nodePrompt)
+
 	switch {
-	case strings.Contains(prompt, "請辨識這張名片圖片") || strings.Contains(prompt, "raw_ocr"):
-		if strings.Contains(lowerPrompt, "david.chen") || strings.Contains(lowerPrompt, "appier") || strings.Contains(prompt, "陳建宏") || strings.Contains(lowerPrompt, "promotion") {
+	case strings.Contains(nodePrompt, "根據使用者的修改指令更新名片 JSON"):
+		if strings.Contains(prompt, "[Active Skill - hitl_multi_edit]") && strings.Contains(nodePrompt, "王大銘") {
+			return `{
+  "name": "王大銘 (Ming Wang)",
+  "title": "研發副總",
+  "company": "台灣人工智慧實驗室 (Taiwan AI Labs)",
+  "email": "ming.wang@ailabs.example.tw",
+  "phone": "+886-988-777-666",
+  "address": "台北市大安區仁愛路三段99號",
+  "website": "https://ailabs.tw",
+  "company_info": "台灣人工智慧實驗室（Taiwan AI Labs）專注於醫療 AI、繁體中文大型語言模型與可信任人工智慧研發。為台灣極具代表性的前瞻 AI 研究機構。",
+  "tags": ["AI", "LLM", "HealthTech", "Taiwan"],
+  "met_context": "2026 Cloud Summit Taipei"
+}`
+		}
+		return `{"status":"no_op"}`
+
+	case strings.Contains(nodePrompt, "請辨識這張名片圖片") || strings.Contains(nodePrompt, "raw_ocr"):
+		if strings.Contains(lowerNodePrompt, "jp_sony_sato") || strings.Contains(nodePrompt, "佐藤") {
+			if strings.Contains(prompt, "[Active Skill - jp_card_ocr]") {
+				return `{
+  "name": "佐藤 健一 (Kenichi Sato)",
+  "title": "車載イメージセンサ事業部 統括部長 (VP, Automotive Image Sensor Div.)",
+  "company": "Sony Semiconductor Solutions (ソニーセミコンダクタソリューションズ)",
+  "email": "kenichi.sato@sony.example.jp",
+  "phone": "+81 (0)3-6748-2111",
+  "address": "神奈川県厚木市旭町4-14-1",
+  "website": "https://www.sony-semicon.com",
+  "raw_ocr": "ソニーセミコンダクタソリューションズ株式会社 Sony Semiconductor Solutions\n佐藤 健一 Kenichi Sato\n車載イメージセンサ事業部 統括部長\n+81 (0)3-6748-2111\nkenichi.sato@sony.example.jp"
+}`
+			}
+			return `{
+  "name": "佐藤 健一",
+  "title": "統括部長",
+  "company": "ソニーセミコンダクタソリューションズ株式会社",
+  "email": "kenichi.sato@sony.example.jp",
+  "phone": "+81 (0)3-6748-2111",
+  "address": "神奈川県厚木市旭町4-14-1",
+  "website": "https://www.sony-semicon.com",
+  "raw_ocr": "ソニーセミコンダクタソリューションズ株式会社\n佐藤 健一\n統括部長\n+81 (0)3-6748-2111"
+}`
+		}
+		if strings.Contains(lowerNodePrompt, "david.chen") || strings.Contains(lowerNodePrompt, "appier") || strings.Contains(nodePrompt, "陳建宏") || strings.Contains(lowerNodePrompt, "promotion") {
 			return `{
   "name": "陳建宏 (David Chen)",
   "title": "Chief Technology Officer (CTO)",
@@ -719,8 +765,20 @@ func (m *MockLLM) respondToPrompt(prompt string) string {
   "raw_ocr": "台灣人工智慧實驗室 Taiwan AI Labs\n王大明 Ming Wang\n資深技術經理\n0912-345-678\nming.wang@ailabs.example.tw"
 }`
 
-	case strings.Contains(prompt, "company_info") || strings.Contains(prompt, "請查詢此公司的背景"):
-		if strings.Contains(lowerPrompt, "appier") || strings.Contains(prompt, "沛星") {
+	case strings.Contains(nodePrompt, "company_info") || strings.Contains(nodePrompt, "請查詢此公司的背景"):
+		if strings.Contains(lowerNodePrompt, "sony") || strings.Contains(nodePrompt, "ソニー") {
+			if strings.Contains(prompt, "[Active Skill - jp_card_ocr]") {
+				return `{
+  "company_info": "Sony Semiconductor Solutions（ソニーセミコンダクタソリューションズ）為全球車載與行動 CMOS 影像感測器（Image Sensor）領導廠商，提供高感度車用 ADAS 感測與邊緣 AI 晶片解決方案。",
+  "tags": ["Semiconductor", "CMOS Sensor", "Automotive", "Japan"]
+}`
+			}
+			return `{
+  "company_info": "ソニーセミコンダクタソリューションズ株式会社 是專注於科技創新與數位轉型的企業，提供專業技術與產業解決方案。",
+  "tags": ["AI", "Cloud", "SaaS", "Tech"]
+}`
+		}
+		if strings.Contains(lowerNodePrompt, "appier") || strings.Contains(nodePrompt, "沛星") {
 			return `{
   "company_info": "Appier（沛星互動科技）是一家以 AI 為核心的跨國 SaaS 科技公司，專注於 MarTech、AdTech 與企業級生成式 AI 決策解決方案。",
   "tags": ["AI", "MarTech", "SaaS", "Enterprise"]
@@ -731,29 +789,34 @@ func (m *MockLLM) respondToPrompt(prompt string) string {
   "tags": ["AI", "LLM", "HealthTech", "Taiwan"]
 }`
 
-	case strings.Contains(prompt, "推斷這張名片的相遇場合"):
-		lines := strings.Split(strings.TrimSpace(prompt), "\n")
+	case strings.Contains(nodePrompt, "推斷這張名片的相遇場合"):
+		lines := strings.Split(strings.TrimSpace(nodePrompt), "\n")
 		lastLine := strings.TrimSpace(lines[len(lines)-1])
 		if lastLine != "" && !strings.HasPrefix(lastLine, "請從以下") {
 			return lastLine
 		}
 		return "2026 Cloud Summit Taipei"
 
-	case strings.Contains(prompt, "SearchFilter") || strings.Contains(prompt, "名片搜尋語句"):
-		lower := strings.ToLower(prompt)
-		if strings.Contains(lower, "cloud summit") && strings.Contains(lower, "ai") {
+	case strings.Contains(nodePrompt, "SearchFilter") || strings.Contains(nodePrompt, "名片搜尋語句"):
+		if strings.Contains(nodePrompt, "竹科半導體大廠") || strings.Contains(lowerNodePrompt, "cowos") {
+			if strings.Contains(prompt, "[Active Skill - tw_semicon_search]") {
+				return `{"keywords":["台積電","TSMC"],"company":"台積電","title":"","tag":"Semiconductor"}`
+			}
+			return `{"keywords":[],"company":"","title":"","tag":""}`
+		}
+		if strings.Contains(lowerNodePrompt, "cloud summit") && strings.Contains(lowerNodePrompt, "ai") {
 			return `{"keywords":["Cloud Summit","AI"],"company":"","title":"","tag":"AI"}`
 		}
-		if strings.Contains(lower, "google") {
+		if strings.Contains(lowerNodePrompt, "google") {
 			return `{"keywords":["Google"],"company":"Google","title":"","tag":""}`
 		}
-		if strings.Contains(lower, "台積電") || strings.Contains(lower, "tsmc") {
+		if strings.Contains(lowerNodePrompt, "台積電") || strings.Contains(lowerNodePrompt, "tsmc") {
 			return `{"keywords":["台積電"],"company":"台灣積體電路製造","title":"","tag":"Semiconductor"}`
 		}
 		return `{"keywords":[],"company":"","title":"","tag":""}`
 
-	case strings.Contains(prompt, "破冰跟進信") || strings.Contains(prompt, "Follow-up Email"):
-		if strings.Contains(prompt, "林雅婷") || strings.Contains(lowerPrompt, "google cloud") {
+	case strings.Contains(nodePrompt, "破冰跟進信") || strings.Contains(nodePrompt, "Follow-up Email"):
+		if strings.Contains(nodePrompt, "林雅婷") || strings.Contains(lowerNodePrompt, "google cloud") {
 			return `主旨：很高興在 2026 Cloud Summit Taipei 認識您 — 期待與 Google Cloud Taiwan 進一步交流 AI 應用
 
 林雅婷 (Yating Lin) Senior AI Solutions Architect 您好：
@@ -764,16 +827,66 @@ func (m *MockLLM) respondToPrompt(prompt string) string {
 
 祝 商祺`
 		}
-		if strings.Contains(prompt, "王大明") || strings.Contains(lowerPrompt, "taiwan ai labs") {
-			return `主旨：很高興在 2026 Cloud Summit Taipei 認識您 — 期待與台灣人工智慧實驗室進一步交流合作
+		if strings.Contains(nodePrompt, "王心怡") || strings.Contains(lowerNodePrompt, "cathay") {
+			if strings.Contains(prompt, "[Long-Term Memory - LongTermMEMORY.md]") && strings.Contains(prompt, "FINTECH_COMPLIANCE_SUBJECT_TAG") {
+				return `主旨：[FinTech 合作提案] 很高興在 FinTech Taipei 晚宴 認識您 — 期待與國泰金控 (Cathay Financial Holding) 深入交流數位金融創新
 
-王大明 (Ming Wang) 您好：
+王心怡 (Cindy Wang) Partner & FinTech Lead 您好：
+
+很高興日前在「FinTech Taipei 晚宴」與您交流並交換名片！非常佩服國泰金控 (Cathay Financial Holding) 在數位金融創新、跨場景金融生態系與 AI 風險治理上的領先佈局。
+
+希望下週能有機會安排 15 分鐘的線上會議，進一步探討雙方在數位金融創新與企業級 AI 治理上的合作機會（本信件遵循金融合規與個資保護規範，不附載聯絡電話與地址等敏感個資）。
+
+祝 商祺`
+			}
+			if strings.Contains(prompt, "[Active Skill - executive_email_drafter]") {
+				return `主旨：很高興在 FinTech Taipei 晚宴 認識您 — 期待與國泰金控 (Cathay Financial Holding) 進一步交流
+
+王心怡 (Cindy Wang) Partner & FinTech Lead 您好：
+
+很高興日前在「FinTech Taipei 晚宴」與您深入交流並交換名片！非常佩服國泰金控 (Cathay Financial Holding) 在數位金融創新與金融科技上的卓越表現。
+
+希望下週能有機會安排 15 分鐘的線上會議或咖啡交流，進一步探討雙方潛在的合作機會。
+
+祝 商祺`
+			}
+			if strings.Contains(prompt, "RECIPIENT_PERSONALIZATION_REQUIRED") {
+				return `主旨：很高興在近期活動認識您 — 期待與國泰金控進一步交流合作
+
+王心怡 (Cindy Wang) 您好：
+
+很高興日前與您交流並交換名片！非常佩服國泰金控 (Cathay Financial Holding) 在業界的卓越發展。
+
+希望下週能有機會安排 15 分鐘的線上會議或咖啡交流，進一步探討雙方潛在的合作機會。
+
+祝 商祺`
+			}
+		}
+		if strings.Contains(nodePrompt, "佐藤 健一") || strings.Contains(lowerNodePrompt, "sony") {
+			return `主旨：很高興在 2026 Cloud Summit Taipei 認識您 — 期待與 Sony Semiconductor Solutions 進一步交流車用感測與 AI 應用
+
+佐藤 健一 (Kenichi Sato) 您好：
+
+很高興日前在活動中與您深入交流並交換名片！非常佩服 Sony Semiconductor Solutions 在車載 CMOS 影像感測器與邊緣 AI 技術上的全球領先地位。
+
+希望下週能有機會安排 15 分鐘的線上會議，進一步探討雙方潛在的合作機會。
+
+祝 商祺`
+		}
+		if strings.Contains(nodePrompt, "王大明") || strings.Contains(nodePrompt, "王大銘") || strings.Contains(lowerNodePrompt, "taiwan ai labs") {
+			recipient := "王大明 (Ming Wang)"
+			if strings.Contains(nodePrompt, "王大銘") {
+				recipient = "王大銘 (Ming Wang) 研發副總"
+			}
+			return fmt.Sprintf(`主旨：很高興在 2026 Cloud Summit Taipei 認識您 — 期待與台灣人工智慧實驗室進一步交流合作
+
+%s 您好：
 
 很高興日前在「2026 Cloud Summit Taipei」與您深入交流並交換名片！非常佩服台灣人工智慧實驗室 (Taiwan AI Labs) 在繁體中文大型語言模型與可信任 AI 研發上的卓越成果。
 
 希望下週能有機會安排 15 分鐘的線上會議或咖啡交流，進一步探討雙方潛在的合作機會。
 
-祝 商祺`
+祝 商祺`, recipient)
 		}
 		return `主旨：很高興在活動中認識您 — 期待未來進一步交流合作
 

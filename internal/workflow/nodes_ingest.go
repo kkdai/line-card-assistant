@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kkdai/line-card-assistant/internal/harness"
 	"github.com/kkdai/line-card-assistant/internal/linebot"
 	"github.com/kkdai/line-card-assistant/internal/models"
 	"github.com/kkdai/line-card-assistant/internal/store"
@@ -222,9 +223,13 @@ func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 				return nil, fmt.Errorf("vision OCR failed: %w", err)
 			}
 
+			_, _ = composeHarnessPrompt(span, NodeVisionOCR, "", string(imgBytes))
 			span.SetAttributes(
 				AttrCardID.String(card.ID),
+				AttrCardName.String(card.Name),
+				AttrCardTitle.String(card.Title),
 				AttrCardCompany.String(card.Company),
+				AttrCardPhone.String(card.Phone),
 			)
 			setState(ctx, ev, StateKeyDraftCard, card)
 			setNodeTrace(ev, NodeVisionOCR, fmt.Sprintf("name=%s company=%s", card.Name, card.Company))
@@ -285,7 +290,7 @@ func extractCardFromImageWithMIME(ctx context.Context, llm model.LLM, imgBytes [
 	if strings.TrimSpace(mimeType) == "" {
 		mimeType = "image/jpeg"
 	}
-	prompt := `請辨識這張名片圖片，並以純 JSON 格式輸出以下欄位：
+	basePrompt := `請辨識這張名片圖片，並以純 JSON 格式輸出以下欄位：
 {
   "name": "姓名",
   "title": "職稱",
@@ -297,6 +302,7 @@ func extractCardFromImageWithMIME(ctx context.Context, llm model.LLM, imgBytes [
   "raw_ocr": "完整名片文字內容"
 }
 僅輸出 JSON，不要包含 Markdown code fence。`
+	prompt, _ := harness.LoadActive().ComposeNodePrompt(NodeVisionOCR, basePrompt, string(imgBytes))
 
 	parts := []*genai.Part{
 		{Text: prompt},
@@ -384,7 +390,8 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 				return nil, fmt.Errorf("draft_card missing in session state")
 			}
 
-			cleanPhone := store.NormalizePhone(card.Phone)
+			_, h := composeHarnessPrompt(span, NodeCleanAndDedup, "", card.Phone+" "+card.Company)
+			cleanPhone := normalizePhoneWithHarness(card.Phone, h)
 			userID := card.UserID
 			if userID == "" {
 				userID = getStringState(ctx, StateKeyUserID)
@@ -394,7 +401,10 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 			if err != nil {
 				return nil, fmt.Errorf("check duplicate: %w", err)
 			}
-			span.SetAttributes(AttrCardDuplicate.Bool(isDup))
+			span.SetAttributes(
+				AttrCardPhone.String(cleanPhone),
+				AttrCardDuplicate.Bool(isDup),
+			)
 
 			oldTitle := ""
 			dupID := ""
@@ -419,6 +429,34 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 		},
 		workflow.NodeConfig{},
 	)
+}
+
+var reIntlTrunkZero = regexp.MustCompile(`^\+(\d{1,3})\s*\(0\)\s*(\d[\d\-\s]+)$`)
+
+// normalizePhoneWithHarness applies Taiwan E.164 normalization plus any evolved Harness² tool_guidance / skill rules
+// (such as stripping international trunk '(0)' prefixes like '+81 (0)3-6748-2111' -> '+81-3-6748-2111' and extension suffixes).
+func normalizePhoneWithHarness(phone string, h *harness.Harness) string {
+	trimmed := strings.TrimSpace(phone)
+	if trimmed == "" {
+		return ""
+	}
+	if h != nil {
+		// Strip extension suffix (#ext / ext.) when guided by tool_guidance or hitl_multi_edit skill
+		_, hasMultiEdit := h.Skills["hitl_multi_edit"]
+		if strings.Contains(h.ToolGuidance, "E.164_STRIP_EXT") || hasMultiEdit {
+			if idx := strings.IndexAny(trimmed, "#轉"); idx > 0 {
+				trimmed = strings.TrimSpace(trimmed[:idx])
+			}
+		}
+		// Strip domestic trunk '(0)' in international numbers (+81 (0)3-6748-2111 -> +81-3-6748-2111)
+		if strings.Contains(h.ToolGuidance, "E.164_INTL_TRUNK_ZERO") || strings.Contains(h.ToolGuidance, "JP_PHONE_NORMALIZE_ENABLED") {
+			if m := reIntlTrunkZero.FindStringSubmatch(trimmed); len(m) == 3 {
+				rest := strings.ReplaceAll(strings.TrimSpace(m[2]), " ", "-")
+				return "+" + m[1] + "-" + rest
+			}
+		}
+	}
+	return store.NormalizePhone(trimmed)
 }
 
 // FormatCompanyProfileArgs defines structured company enrichment output arguments.
@@ -447,12 +485,18 @@ func NewCompanyEnrichAgent(llm model.LLM) (agent.Agent, error) {
 	}); err == nil && formatTool != nil {
 		tools = append(tools, formatTool)
 	}
+	instruction := "你是一位專業商業分析助理。請根據公司名稱搜尋背景資訊，並回傳 JSON 格式：{\"company_info\": \"兩句話公司簡介\", \"tags\": [\"產業標籤1\", \"產業標籤2\", \"產業標籤3\"]}。"
+	if h := harness.LoadActive(); h != nil {
+		if sub, ok := h.SubAgents["company_enrich"]; ok && strings.TrimSpace(sub.Body) != "" {
+			instruction = strings.TrimSpace(sub.Body)
+		}
+	}
 	return llmagent.New(llmagent.Config{
 		Name:        "CompanyEnrichAgent",
 		Description: "Searches Google to summarize company background and industry tags.",
 		Model:       llm,
 		Mode:        llmagent.ModeSingleTurn,
-		Instruction: "你是一位專業商業分析助理。請根據公司名稱搜尋背景資訊，並回傳 JSON 格式：{\"company_info\": \"兩句話公司簡介\", \"tags\": [\"產業標籤1\", \"產業標籤2\", \"產業標籤3\"]}。",
+		Instruction: instruction,
 		Tools:       tools,
 	})
 }
@@ -482,7 +526,8 @@ func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
 			}
 			span.SetAttributes(AttrCardCompany.String(companyName))
 
-			prompt := fmt.Sprintf("請查詢此公司的背景並產生 2 句話簡介與 3 到 5 個產業標籤 (JSON): %s", companyName)
+			basePrompt := fmt.Sprintf("請查詢此公司的背景並產生 2 句話簡介與 3 到 5 個產業標籤 (JSON): %s", companyName)
+			prompt, _ := composeHarnessPrompt(span, NodeCompanyEnrich, basePrompt, companyName)
 
 			var replyText string
 			if enrichAgent != nil {
@@ -798,11 +843,17 @@ func newApplyEditNode(llm model.LLM, cardStore store.CardStore) *workflow.Functi
 			}
 			instruction := getStringState(ctx, StateKeyEditInstruction)
 
+			_, h := composeHarnessPrompt(span, NodeApplyEdit, "", instruction)
 			updatedCard := applyCardEdit(spanCtx, llm, card, instruction)
 			if updatedCard.Phone != "" {
-				updatedCard.Phone = store.NormalizePhone(updatedCard.Phone)
+				updatedCard.Phone = normalizePhoneWithHarness(updatedCard.Phone, h)
 				setState(ctx, ev, StateKeyCleanPhone, updatedCard.Phone)
 			}
+			span.SetAttributes(
+				AttrCardName.String(updatedCard.Name),
+				AttrCardTitle.String(updatedCard.Title),
+				AttrCardPhone.String(updatedCard.Phone),
+			)
 
 			// Re-verify duplicate status in case name/company/email changed
 			if cardStore != nil {
@@ -819,7 +870,7 @@ func newApplyEditNode(llm model.LLM, cardStore store.CardStore) *workflow.Functi
 
 			setState(ctx, ev, StateKeyDraftCard, updatedCard)
 			setState(ctx, ev, "extracted_card", updatedCard)
-			setNodeTrace(ev, NodeApplyEdit, fmt.Sprintf("updated_title=%s updated_context=%s", updatedCard.Title, updatedCard.MetContext))
+			setNodeTrace(ev, NodeApplyEdit, fmt.Sprintf("updated_name=%s updated_title=%s updated_context=%s", updatedCard.Name, updatedCard.Title, updatedCard.MetContext))
 			ev.Routes = []string{RoutePreview}
 			ev.Output = updatedCard
 			return ev, nil
@@ -835,18 +886,26 @@ func applyCardEdit(ctx context.Context, llm model.LLM, card *models.BusinessCard
 		return updated
 	}
 
+	h := harness.LoadActive()
+	hasMultiEditSkill := false
+	if h != nil {
+		_, hasMultiEditSkill = h.Skills["hitl_multi_edit"]
+	}
+
 	// Deterministic regex rules for common natural language edits in Traditional Chinese & English
 	// so edits work with 100% precision even before or alongside LLM parsing.
 	appliedRule := applyDeterministicEdits(updated, trimmed)
-	if appliedRule {
+	isMultiClause := strings.Contains(trimmed, "，") || strings.Contains(trimmed, ",") || strings.Contains(trimmed, "其實是") || strings.Contains(trimmed, "升為")
+	if appliedRule && !(hasMultiEditSkill && isMultiClause) {
 		return updated
 	}
 
-	// Ask LLM to apply the edit onto the JSON card
+	// Ask LLM to apply the edit onto the JSON card (with active Harness² prompt & skills)
 	cardBytes, _ := json.Marshal(updated)
-	prompt := fmt.Sprintf(`請根據使用者的修改指令更新名片 JSON，並僅回傳更新後的完整 JSON：
+	basePrompt := fmt.Sprintf(`請根據使用者的修改指令更新名片 JSON，並僅回傳更新後的完整 JSON：
 目前名片 JSON：%s
 使用者修改指令：%s`, string(cardBytes), trimmed)
+	prompt, _ := h.ComposeNodePrompt(NodeApplyEdit, basePrompt, trimmed)
 
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{
