@@ -375,3 +375,37 @@ Every node in the ADK 2.0 Graph Workflow emits a dedicated OpenTelemetry span (`
 | `workflow.node.FormatCarouselNode` | `adk.workflow.node="FormatCarouselNode"`, `adk.search.matches` |
 | `workflow.node.EmailDraftNode` | `adk.workflow.node="EmailDraftNode"`, `adk.card.id`, `adk.card.company` |
 
+---
+
+## 🧬 Phase 6: Google Research Harness² Two-Level Recursive Optimization ([`google-research/harness2`](https://github.com/google-research/harness2))
+
+This repository integrates **[Google Research `Harness²` (*Recursive Harnessing for LLM Agents*, arXiv:2610.14224)](https://github.com/google-research/harness2)** across three architectural layers:
+
+1. **Part 1 — Editable `c1..c8` Harness Component Tree (`internal/harness`, `harness/base/`)**:
+   Decouples hardcoded prompts, guardrails, long-term domain memory, tool descriptions, delegated sub-agents, and on-demand skills from the compiled Go binary into a hot-loadable `c1..c8` directory tree (`LINE_CARD_HARNESS_DIR`), enforcing `OPENCODE_SURFACE` invariants (`always_on_max = 24,000 bytes` and mandatory skill trigger references).
+   ![Harness² Part 1 Architecture](docs/architecture-harness2-part1.png)
+
+2. **Part 2 — Zero-Leakage `LineCardAdapter` Bridging Phase 4 Eval & Phase 5 OpenTelemetry Spans (`harness/line_card_adapter.py`, `cmd/harness-runner`)**:
+   Implements the `BenchmarkAdapter` Protocol (`get_base_harness`, `list_tasks`, `execute`, `evaluate`) and converts all 13 `workflow.node.*` OpenTelemetry spans into `[ACTION] / [OBSERVATION] / [ERROR]` `trajectory.md` logs for `Propose -> Probe -> Compose` while keeping Ground Truth rubrics behind a strict zero-leakage barrier.
+   ![Harness² Part 2 Adapter Architecture](docs/architecture-harness2-part2.png)
+
+3. **Part 3 — Two-Level Recursive Optimization Benchmark (`Parallel` vs `Sequential + LongTermMEMORY.md`)**:
+   Reproducible benchmark (`harness/run_harness2_experiment.py`) evaluating 8 tasks (32 rubrics) across four evolved Harness trees:
+   ![Harness² Part 3 Experiment & Outlook](docs/architecture-harness2-part3.png)
+
+```bash
+# Validate all c1..c8 Harness trees (base, k=1, k=2 Parallel, k=2 Sequential + Memory):
+go test -v ./internal/harness/... ./internal/workflow/...
+
+# Run the full 8-task (32-rubric) Harness² Recursive Optimization Benchmark:
+python3 harness/run_harness2_experiment.py
+```
+
+| Configuration | Harness Directory | Rubrics Passed | Task Score | Accuracy | `c1..c4` Always-On Bytes |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Base Harness ($k=0$)** | `harness/base` | `20 / 32` | `5.00 / 8.00` | **62.5%** | `1,599 / 24,000 B` |
+| **Single-Step Propose-Probe-Compose ($k=1$)** | `harness/evolved/k1_single_step` | `27 / 32` | `6.75 / 8.00` | **84.4%** | `2,505 / 24,000 B` |
+| **Multi-Step Parallel Recursion ($k=2$, No Memory)** | `harness/evolved/k2_parallel` | `31 / 32` | `7.75 / 8.00` | **96.9%** | `2,998 / 24,000 B` |
+| **Multi-Step Sequential Recursion + `LongTermMEMORY.md` ($k=2$)** | `harness/evolved/k2_sequential_memory` | `32 / 32` | `8.00 / 8.00` | **100.0%** | `4,661 / 24,000 B` |
+
+

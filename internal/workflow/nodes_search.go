@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kkdai/line-card-assistant/internal/harness"
 	"github.com/kkdai/line-card-assistant/internal/linebot"
 	"github.com/kkdai/line-card-assistant/internal/models"
 	"github.com/kkdai/line-card-assistant/internal/store"
@@ -44,10 +45,14 @@ func newQueryIntentNode(llm model.LLM) *workflow.FunctionNode {
 				userID = ctx.UserID()
 			}
 
+			_, _ = composeHarnessPrompt(span, NodeQueryIntent, "", query)
 			filter := parseSearchIntent(spanCtx, llm, userID, query)
-			span.SetAttributes(AttrSearchKeywords.StringSlice(filter.Keywords))
+			span.SetAttributes(
+				AttrSearchKeywords.StringSlice(filter.Keywords),
+				AttrCardCompany.String(filter.Company),
+			)
 			setState(ctx, ev, StateKeySearchFilter, filter)
-			setNodeTrace(ev, NodeQueryIntent, fmt.Sprintf("keywords=%v tag=%s", filter.Keywords, filter.Tag))
+			setNodeTrace(ev, NodeQueryIntent, fmt.Sprintf("keywords=%v company=%s tag=%s", filter.Keywords, filter.Company, filter.Tag))
 			ev.Output = filter
 			return ev, nil
 		},
@@ -64,7 +69,7 @@ func parseSearchIntent(ctx context.Context, llm model.LLM, userID, query string)
 		return filter
 	}
 
-	prompt := fmt.Sprintf(`請將使用者的名片搜尋語句解析為 JSON 格式的 SearchFilter：
+	basePrompt := fmt.Sprintf(`請將使用者的名片搜尋語句解析為 JSON 格式的 SearchFilter：
 {
   "keywords": ["關鍵字1", "關鍵字2"],
   "company": "特定公司名稱（若無則留空）",
@@ -73,6 +78,7 @@ func parseSearchIntent(ctx context.Context, llm model.LLM, userID, query string)
 }
 僅輸出 JSON，不要包含 Markdown code fence。
 使用者搜尋語句：%s`, trimmed)
+	prompt, _ := harness.LoadActive().ComposeNodePrompt(NodeQueryIntent, basePrompt, trimmed)
 
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{
@@ -285,7 +291,12 @@ func newEmailDraftNode(llm model.LLM, cardStore store.CardStore) *workflow.Funct
 			if card == nil {
 				return nil, fmt.Errorf("target business card not found for email draft (card_id=%q)", cardID)
 			}
-			span.SetAttributes(AttrCardID.String(card.ID), AttrCardCompany.String(card.Company))
+			span.SetAttributes(
+				AttrCardID.String(card.ID),
+				AttrCardName.String(card.Name),
+				AttrCardCompany.String(card.Company),
+			)
+			_, _ = composeHarnessPrompt(span, NodeEmailDraft, "", card.Name+" "+card.Company+" "+card.MetContext)
 
 			draft := generateEmailDraft(spanCtx, llm, card)
 			setState(ctx, ev, StateKeyDraftEmailText, draft)
@@ -299,13 +310,14 @@ func newEmailDraftNode(llm model.LLM, cardStore store.CardStore) *workflow.Funct
 }
 
 func generateEmailDraft(ctx context.Context, llm model.LLM, card *models.BusinessCard) string {
-	prompt := fmt.Sprintf(`請為以下名片聯絡人撰寫一封專業、親切的繁體中文商務破冰跟進信（Follow-up Email），內容須自然提及相遇場合與對方公司背景：
+	basePrompt := fmt.Sprintf(`請為以下名片聯絡人撰寫一封專業、親切的繁體中文商務破冰跟進信（Follow-up Email），內容須自然提及相遇場合與對方公司背景：
 - 姓名：%s
 - 職稱：%s
 - 公司：%s
 - 相遇場合：%s
 - 公司背景：%s`,
 		card.Name, card.Title, card.Company, card.MetContext, card.CompanyInfo)
+	prompt, _ := harness.LoadActive().ComposeNodePrompt(NodeEmailDraft, basePrompt, card.Name+" "+card.Company+" "+card.MetContext)
 
 	req := &model.LLMRequest{
 		Contents: []*genai.Content{

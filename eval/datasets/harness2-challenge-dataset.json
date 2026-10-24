@@ -1,0 +1,288 @@
+{
+  "eval_set_id": "line_card_assistant_harness2_challenge_v1",
+  "name": "LINE Card Assistant — Harness² Open-World Challenge Benchmark (8 Tasks / 32 Rubrics)",
+  "description": "Evaluation dataset for Google Research Harness² (arXiv:2610.14224) Two-Level Recursive Optimization across Ingestion, Deduplication, Colloquial Search, Multi-Clause HITL Editing, and Compliance-Aware Executive Email Drafting.",
+  "eval_cases": [
+    {
+      "eval_case_id": "baseline_ingest_ming_wang",
+      "domain": "ingest_baseline",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "ingest"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_route_ingest",
+          "description": "RouterNode dispatches to ingest pipeline and executes VisionOCRNode and HITLConfirmNode.",
+          "required_nodes": ["RouterNode", "VisionOCRNode", "BuildPreviewNode", "HITLConfirmNode"]
+        },
+        {
+          "id": "r2_ocr_identity",
+          "description": "Extracts name '王大明 (Ming Wang)' and company '台灣人工智慧實驗室 (Taiwan AI Labs)'.",
+          "required_substrings": ["王大明 (Ming Wang)", "台灣人工智慧實驗室 (Taiwan AI Labs)"]
+        },
+        {
+          "id": "r3_e164_phone",
+          "description": "Normalizes Taiwan mobile number 0912-345-678 into E.164 format '+886-912-345-678'.",
+          "required_substrings": ["+886-912-345-678"]
+        },
+        {
+          "id": "r4_flex_bubble_hitl",
+          "description": "Renders a valid LINE Flex Bubble preview JSON and pauses at HITL interrupt hitl_confirm_1.",
+          "required_substrings": ["\"type\":\"bubble\"", "hitl_confirm_1"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "baseline_dedup_appier_promotion",
+      "domain": "dedup_baseline",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "ingest:david.chen@appier.example.com"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_detect_duplicate",
+          "description": "CleanAndDedupNode detects existing card duplicate ('is_duplicate': true).",
+          "required_substrings": ["\"is_duplicate\": true"]
+        },
+        {
+          "id": "r2_promotion_title_tracking",
+          "description": "Preserves old title 'VP of Engineering' in duplicate_old_title and extracts new title 'Chief Technology Officer (CTO)'.",
+          "required_substrings": ["VP of Engineering", "Chief Technology Officer (CTO)"]
+        },
+        {
+          "id": "r3_e164_phone",
+          "description": "Normalizes phone 0922-888-168 to '+886-922-888-168'.",
+          "required_substrings": ["+886-922-888-168"]
+        },
+        {
+          "id": "r4_preserve_seed_id",
+          "description": "Reuses existing card ID 'card-seed-2' for upsert preview.",
+          "required_substrings": ["card-seed-2"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "baseline_search_cloud_summit_ai",
+      "domain": "search_baseline",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "幫我找上週在 Cloud Summit 認識做 AI 的人"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_route_search",
+          "description": "RouterNode dispatches to QueryIntentNode, HybridSearchNode, and FormatCarouselNode.",
+          "required_nodes": ["RouterNode", "QueryIntentNode", "HybridSearchNode", "FormatCarouselNode"]
+        },
+        {
+          "id": "r2_intent_extraction",
+          "description": "Extracts 'Cloud Summit' keyword and 'AI' tag in SearchFilter.",
+          "required_substrings": ["Cloud Summit", "\"tag\": \"AI\""]
+        },
+        {
+          "id": "r3_matched_contacts",
+          "description": "Matches both 林雅婷 (Yating Lin) at Google Cloud Taiwan and 陳建宏 (David Chen) at Appier.",
+          "required_substrings": ["林雅婷 (Yating Lin)", "陳建宏 (David Chen)"]
+        },
+        {
+          "id": "r4_flex_carousel",
+          "description": "Formats search results as a LINE Flex Carousel JSON ('\"type\":\"carousel\"').",
+          "required_substrings": ["\"type\":\"carousel\"", "為您找到 2 張符合條件的名片"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "baseline_email_google_cloud",
+      "domain": "email_baseline",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "action=draft_email&card_id=card-seed-1"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_route_email",
+          "description": "RouterNode dispatches directly to EmailDraftNode.",
+          "required_nodes": ["RouterNode", "EmailDraftNode"]
+        },
+        {
+          "id": "r2_recipient_company",
+          "description": "Addresses 林雅婷 (Yating Lin) and Google Cloud Taiwan.",
+          "required_substrings": ["林雅婷 (Yating Lin)", "Google Cloud Taiwan"]
+        },
+        {
+          "id": "r3_meeting_context",
+          "description": "Mentions the meeting occasion '2026 Cloud Summit Taipei'.",
+          "required_substrings": ["2026 Cloud Summit Taipei"]
+        },
+        {
+          "id": "r4_call_to_action",
+          "description": "Includes a concrete 15-minute meeting call-to-action.",
+          "required_substrings": ["15 分鐘的線上會議"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "challenge_jp_bilingual_ingest",
+      "domain": "ingest_multilingual_ocr",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "ingest:jp_sony_sato"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_ingest_pipeline",
+          "description": "Executes the full ingest pipeline through VisionOCRNode, parallel fan-out, and HITLConfirmNode.",
+          "required_nodes": ["RouterNode", "VisionOCRNode", "CleanAndDedupNode", "CompanyEnrichNode", "HITLConfirmNode"]
+        },
+        {
+          "id": "r2_bilingual_name_title_company",
+          "description": "Preserves both Japanese kanji and English romaji/division for name, title, and company ('佐藤 健一 (Kenichi Sato)', 'VP, Automotive Image Sensor Div.', 'Sony Semiconductor Solutions (ソニーセミコンダクタソリューションズ)').",
+          "required_substrings": [
+            "佐藤 健一 (Kenichi Sato)",
+            "車載イメージセンサ事業部 統括部長 (VP, Automotive Image Sensor Div.)",
+            "Sony Semiconductor Solutions (ソニーセミコンダクタソリューションズ)"
+          ]
+        },
+        {
+          "id": "r3_jp_e164_phone_normalization",
+          "description": "Strips the Japanese domestic trunk prefix '(0)' to normalize '+81 (0)3-6748-2111' into '+81-3-6748-2111'.",
+          "required_substrings": ["\"phone\": \"+81-3-6748-2111\"", "\"clean_phone\": \"+81-3-6748-2111\""],
+          "forbidden_substrings": ["\"phone\": \"+81 (0)3-6748-2111\""]
+        },
+        {
+          "id": "r4_semicon_sensor_enrichment",
+          "description": "Enriches Sony Semiconductor Solutions with domain-specific 'CMOS Sensor' and 'Automotive' industry tags rather than generic SaaS tags.",
+          "required_substrings": ["CMOS Sensor", "Automotive"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "challenge_colloquial_tw_search",
+      "domain": "search_colloquial_alias",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "幫我找竹科半導體大廠做 CoWoS 先進封裝的人"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_search_pipeline",
+          "description": "Dispatches query to QueryIntentNode and HybridSearchNode.",
+          "required_nodes": ["RouterNode", "QueryIntentNode", "HybridSearchNode"]
+        },
+        {
+          "id": "r2_alias_resolution_tsmc",
+          "description": "Resolves colloquial Taiwanese alias '竹科半導體大廠' / 'CoWoS' to canonical company '台積電' and keyword 'TSMC'.",
+          "required_substrings": ["\"company\": \"台積電\"", "TSMC"]
+        },
+        {
+          "id": "r3_semiconductor_tag_inference",
+          "description": "Infers structured tag 'Semiconductor' in SearchFilter.",
+          "required_substrings": ["\"tag\": \"Semiconductor\""]
+        },
+        {
+          "id": "r4_precision_hybrid_hit_without_broad_fallback",
+          "description": "Matches 張志豪 (Howard Chang) directly in HybridSearchNode ('為您找到 1 張符合條件的名片') without falling back to BroadSearchNode.",
+          "required_substrings": ["張志豪 (Howard Chang)", "為您找到 1 張符合條件的名片"],
+          "forbidden_nodes": ["BroadSearchNode"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "challenge_noisy_multi_edit_hitl",
+      "domain": "hitl_multi_clause_edit",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "action=ingest&edit=名字其實是王大銘，職稱升為研發副總，電話改為 0988-777-666，我們是在 2026 Cloud Summit Taipei 認識的&hitl_action=confirm"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_hitl_edit_confirm_loop_and_phone",
+          "description": "Executes ApplyEditNode -> BuildPreviewNode -> HITLConfirmNode -> SaveCardNode and normalizes phone to '+886-988-777-666'.",
+          "required_nodes": ["HITLConfirmNode", "ApplyEditNode", "SaveCardNode"],
+          "required_substrings": ["+886-988-777-666"]
+        },
+        {
+          "id": "r2_colloquial_name_correction",
+          "description": "Applies colloquial name correction clause '名字其實是王大銘' -> '王大銘 (Ming Wang)'.",
+          "required_substrings": ["王大銘 (Ming Wang)"]
+        },
+        {
+          "id": "r3_colloquial_title_promotion",
+          "description": "Applies colloquial title promotion clause '職稱升為研發副總' -> '研發副總'.",
+          "required_substrings": ["\"title\": \"研發副總\""]
+        },
+        {
+          "id": "r4_post_save_email_reflects_edits",
+          "description": "Generates post-save follow-up email addressing '王大銘 (Ming Wang) 研發副總'.",
+          "required_substrings": ["王大銘 (Ming Wang) 研發副總 您好"]
+        }
+      ]
+    },
+    {
+      "eval_case_id": "challenge_pii_safe_executive_followup",
+      "domain": "email_fintech_compliance",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "action=draft_email&card_id=card-seed-4"
+          }
+        ]
+      },
+      "rubrics": [
+        {
+          "id": "r1_email_node_and_cta",
+          "description": "Executes EmailDraftNode and includes a 15-minute online meeting call-to-action.",
+          "required_nodes": ["RouterNode", "EmailDraftNode"],
+          "required_substrings": ["15 分鐘的線上會議"]
+        },
+        {
+          "id": "r2_personalized_recipient_and_company",
+          "description": "Personalizes email with recipient '王心怡 (Cindy Wang)' and company '國泰金控 (Cathay Financial Holding)'.",
+          "required_substrings": ["王心怡 (Cindy Wang)", "國泰金控 (Cathay Financial Holding)"]
+        },
+        {
+          "id": "r3_executive_title_and_dinner_context",
+          "description": "Includes executive title 'Partner & FinTech Lead' and meeting occasion 'FinTech Taipei 晚宴'.",
+          "required_substrings": ["Partner & FinTech Lead", "FinTech Taipei 晚宴"]
+        },
+        {
+          "id": "r4_fintech_compliance_subject_and_pii_governance",
+          "description": "Prefixes subject line with '[FinTech 合作提案]' and states financial compliance / PII-redaction governance learned via LongTermMEMORY.md.",
+          "required_substrings": ["主旨：[FinTech 合作提案]", "遵循金融合規與個資保護規範，不附載聯絡電話與地址等敏感個資"],
+          "forbidden_substrings": ["+886-955-666-777", "仁愛路四段296號"]
+        }
+      ]
+    }
+  ]
+}
