@@ -10,6 +10,8 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
 
 ![Phase 4: ADK 2.0 Go Agent Evaluation & Quality Flywheel (`agents-cli eval`)](docs/architecture-phase4.png)
 
+![Phase 5: Production Deployment, Terraform IaC, GitHub Actions CI/CD & Cloud Trace Observability](docs/architecture-phase5.png)
+
 ---
 
 ## ✨ Key Features
@@ -20,7 +22,8 @@ An intelligent **LINE Bot Business Card Assistant** written in Go, powered by **
   - **Cloud SQL PostgreSQL Business Card Store (`internal/store.PostgresStore`)**: Persists verified `BusinessCard` records in **Cloud SQL PostgreSQL (`gorm.io/driver/postgres`)** via `store.NewStore(ctx)` (`CARD_STORE_TYPE=cloud_sql` / `DATABASE_URL` / `INSTANCE_CONNECTION_NAME`), supporting upserts, duplicate detection, structured + semantic `HybridSearch`, and token-scored `BroadSearch` with automatic fallback to `MemoryStore` in local Dry-Run environments.
   - **Multi-Backend Managed Sessions (`sessions.NewService`)**: Seamlessly switches between in-memory sessions (`SESSION_TYPE=in_memory`), **Vertex AI Agent Engine Managed Sessions (`SESSION_TYPE=agent_engine` / `session/vertexai`)**, and **Cloud SQL PostgreSQL (`SESSION_TYPE=cloud_sql`)**, enabling **stateless cross-instance HITL Pause & Resume**.
   - **GCS Artifact Storage (`sessions.NewArtifactService`)**: Offloads binary business card photos from `Session.State` into versioned **Google Cloud Storage Artifacts (`artifact/gcsartifact`)** (`ARTIFACT_BUCKET_NAME` / `LOGS_BUCKET_NAME`), storing only lightweight artifact references (`card_image_artifact`, `card_image_version`) in session state.
-  - **Cloud Trace & OpenTelemetry Observability (`observability.go`)**: Automatically exports spans and structured logs to `telemetry.googleapis.com` via OTLP with Google ADC authentication.
+  - **Cloud Trace & OpenTelemetry Observability (`observability.go`, `internal/workflow/telemetry.go`, `telemetry.tf`)**: Automatically exports root + per-node workflow spans (`workflow.node.RouterNode`, `workflow.node.VisionOCRNode`, `workflow.node.CleanAndDedupNode`, `workflow.node.CompanyEnrichNode`, `workflow.node.ContextMatchNode`, `workflow.node.HITLConfirmNode`, `workflow.node.HybridSearchNode`, etc.) and correlated JSON logs to `telemetry.googleapis.com` via OTLP with Google ADC authentication, plus a Cloud Logging $\rightarrow$ BigQuery Telemetry sink (`deployment/terraform/shared/telemetry.tf`) for latency & token analytics.
+  - **Production Deployment, Terraform IaC & GitHub Actions CI/CD (`deployment/terraform/`, `.github/workflows/`)**: Declaratively provisions Vertex AI Reasoning Engine (`google_vertex_ai_reasoning_engine.app`), Secret Manager secrets (`line-channel-secret`, `line-channel-access-token`, `line-card-database-url`), GCS buckets, BigQuery telemetry datasets, Workload Identity Federation (WIF), and automated PR Quality Gates (`go test -race` + `agents-cli eval run`) with Staging $\rightarrow$ Production promotion.
 - **Multimodal Vision OCR (`VisionOCRNode`)**: Upload a business card photo in LINE to automatically extract structured fields (`Name`, `Title`, `Company`, `Email`, `Phone`, `Address`, `Website`, `TaxID`).
 - **ADK 2.0 Parallel Fan-Out / Fan-In Enrichment (`AddFanOut` / `AddFanIn`)**:
   - **`CleanAndDedupNode` [DB 查重與驗證]**: Normalizes Taiwan phone numbers (`09xx-xxx-xxx` $\rightarrow$ `+886-9xx-xxx-xxx`) and checks `CardStore` for existing contacts or job title promotions.
@@ -171,15 +174,34 @@ flowchart TD
 │   │   ├── graph.go                # ADK 2.0 Graph Workflow builder, runner & MockLLM
 │   │   ├── nodes_ingest.go         # Ingestion, Fan-Out/Fan-In, HITL & Edit Loop nodes
 │   │   ├── nodes_search.go         # Search intent, Hybrid/Broad search, Carousel & Email nodes
+│   │   ├── telemetry.go            # OpenTelemetry node-level span instrumentation (startNodeSpan / endNodeSpan)
+│   │   ├── telemetry_test.go       # In-memory OpenTelemetry span verification tests
 │   │   └── graph_test.go           # End-to-end ADK 2.0 workflow & HITL unit tests
 │   └── linebot/
 │       ├── handler.go              # LINE Messaging API v8 webhook handler
 │       ├── handler_test.go         # Webhook integration tests
 │       └── flex.go                 # Flex Message Bubble & Carousel JSON builders
+├── deployment/
+│   └── terraform/
+│       ├── single-project/         # Single-project Terraform IaC (Vertex AI Reasoning Engine, IAM, Secret Manager, GCS, BigQuery)
+│       ├── cicd/                   # Multi-project Staging/Prod + GitHub WIF CI/CD Terraform IaC
+│       └── shared/                 # Shared telemetry.tf (Cloud Logging -> BigQuery sink) & storage.tf
+├── .github/
+│   └── workflows/
+│       ├── pr_checks.yaml          # PR Quality Gate: go test -race + E2E + Phase 4 `agents-cli eval run`
+│       ├── staging.yaml            # Push-to-main: `agents-cli deploy` to Staging + Vegeta load test
+│       └── deploy-to-prod.yaml     # Manual approval gate + `agents-cli deploy` to Production
+├── e2e/
+│   ├── integration/                # E2E tests for A2A Agent Card, JSON-RPC message/send, and /app-info
+│   └── load_test/                  # Vegeta HTTP load test suite against deployed Agent Runtime
 ├── docs/
-│   └── architecture.png            # System architecture diagram
+│   ├── architecture.png            # Phase 1: Dual-Channel System Architecture
+│   ├── architecture-phase2.png     # Phase 2: Stateless HITL & GCS Artifact Architecture
+│   ├── architecture-phase3.png     # Phase 3: Decoupled LINE Webhook Gateway & Cloud SQL Architecture
+│   ├── architecture-phase4.png     # Phase 4: Agent Evaluation & Quality Flywheel Architecture
+│   └── architecture-phase5.png     # Phase 5: Production Deployment, Terraform IaC, CI/CD & Observability Architecture
 ├── Dockerfile                      # Multi-stage distroless container image for Agent Runtime & Cloud Run
-├── Makefile                        # playground, local-backend, line-server, deploy, test targets
+├── Makefile                        # playground, local-backend, line-server, deploy, eval, test targets
 └── README.md
 ```
 
@@ -299,3 +321,57 @@ agents-cli eval compare --baseline artifacts/grade_results/results_<baseline>.js
 | `ocr_and_enrichment_quality` | Validates extracted `BusinessCard` fields, Taiwan phone normalization (`+886-912-345-678`), `CompanyInfo`, `Tags`, and `MetContext` | **1.0000** (6/6) |
 | `duplicate_and_hitl_precision` | Validates `IsDuplicate=true` promotion detection (`VP of Engineering` $\rightarrow$ `Chief Technology Officer (CTO)`), `adk_request_input` pause, `ApplyEditNode` loop, and `SaveCardNode` persistence | **1.0000** (6/6) |
 | `search_and_email_grounding` | Validates `QueryIntentNode` filter rewrite, `BroadSearchNode` fallback when `HybridSearchNode` returns 0 hits, and context-grounded icebreaker email generation | **1.0000** (6/6) |
+
+---
+
+## 🚢 Phase 5: Production Deployment (`agents-cli deploy`), Terraform IaC & Full-Stack Observability
+
+### 1. Deploy to Vertex AI Agent Runtime via `agents-cli deploy`
+
+```bash
+# Run preflight check (validates GCP APIs, IAM roles, and target engine without modifying cloud resources):
+uvx google-agents-cli@1.10.0 deploy \
+  --project line-vertex \
+  --region asia-east1 \
+  --dry-run \
+  --no-confirm-project
+
+# Deploy to Vertex AI Agent Runtime with Secret Manager integration:
+uvx google-agents-cli@1.10.0 deploy \
+  --project line-vertex \
+  --region asia-east1 \
+  --no-confirm-project \
+  --secrets="LINE_CHANNEL_SECRET=line-channel-secret,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token"
+```
+
+### 2. Provision Cloud Infrastructure with Terraform (`deployment/terraform/`)
+
+```bash
+# Single-Project Deployment (APIs, IAM, Secret Manager, GCS Buckets, BigQuery Telemetry Sink, Reasoning Engine):
+cd deployment/terraform/single-project
+terraform init
+terraform plan -var-file=vars/env.tfvars
+terraform apply -var-file=vars/env.tfvars
+```
+
+### 3. OpenTelemetry Node-Level Tracing & BigQuery Telemetry Analytics
+
+Every node in the ADK 2.0 Graph Workflow emits a dedicated OpenTelemetry span (`workflow.node.<NodeName>`) via `internal/workflow/telemetry.go` and exports it via `observability.go` (`telemetry.googleapis.com`):
+
+| Span Name | Emitted Attributes |
+| :--- | :--- |
+| `workflow.node.RouterNode` | `adk.workflow.node="RouterNode"`, `adk.workflow.route="ingest\|search\|email"`, `adk.session.id`, `adk.user.id` |
+| `workflow.node.VisionOCRNode` | `adk.workflow.node="VisionOCRNode"`, `adk.card.id`, `adk.card.company` |
+| `workflow.node.CleanAndDedupNode` | `adk.workflow.node="CleanAndDedupNode"`, `adk.card.is_duplicate` |
+| `workflow.node.CompanyEnrichNode` | `adk.workflow.node="CompanyEnrichNode"`, `adk.card.company` |
+| `workflow.node.ContextMatchNode` | `adk.workflow.node="ContextMatchNode"` |
+| `workflow.node.BuildPreviewNode` | `adk.workflow.node="BuildPreviewNode"` |
+| `workflow.node.HITLConfirmNode` | `adk.workflow.node="HITLConfirmNode"`, `adk.hitl.interrupt_id`, `adk.hitl.action="pause\|confirm\|edit"` |
+| `workflow.node.ApplyEditNode` | `adk.workflow.node="ApplyEditNode"`, `adk.workflow.route="preview"` |
+| `workflow.node.SaveCardNode` | `adk.workflow.node="SaveCardNode"`, `adk.card.id`, `adk.card.company` |
+| `workflow.node.QueryIntentNode` | `adk.workflow.node="QueryIntentNode"`, `adk.search.keywords` |
+| `workflow.node.HybridSearchNode` | `adk.workflow.node="HybridSearchNode"`, `adk.search.matches`, `adk.workflow.route="found\|empty"` |
+| `workflow.node.BroadSearchNode` | `adk.workflow.node="BroadSearchNode"`, `adk.search.matches` |
+| `workflow.node.FormatCarouselNode` | `adk.workflow.node="FormatCarouselNode"`, `adk.search.matches` |
+| `workflow.node.EmailDraftNode` | `adk.workflow.node="EmailDraftNode"`, `adk.card.id`, `adk.card.company` |
+

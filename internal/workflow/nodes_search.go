@@ -29,8 +29,13 @@ const (
 func newQueryIntentNode(llm model.LLM) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeQueryIntent,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeQueryIntent, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			query := getStringState(ctx, StateKeyTextInput)
@@ -39,7 +44,8 @@ func newQueryIntentNode(llm model.LLM) *workflow.FunctionNode {
 				userID = ctx.UserID()
 			}
 
-			filter := parseSearchIntent(ctx, llm, userID, query)
+			filter := parseSearchIntent(spanCtx, llm, userID, query)
+			span.SetAttributes(AttrSearchKeywords.StringSlice(filter.Keywords))
 			setState(ctx, ev, StateKeySearchFilter, filter)
 			setNodeTrace(ev, NodeQueryIntent, fmt.Sprintf("keywords=%v tag=%s", filter.Keywords, filter.Tag))
 			ev.Output = filter
@@ -121,8 +127,17 @@ func extractKeywordsHeuristic(query string) []string {
 func newHybridSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeHybridSearch,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeHybridSearch, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				routeAttr := ""
+				if ev != nil && len(ev.Routes) > 0 {
+					routeAttr = ev.Routes[0]
+				}
+				endNodeSpan(span, err, AttrWorkflowRoute.String(routeAttr))
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			filter := getSearchFilter(ctx)
@@ -133,10 +148,11 @@ func newHybridSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 				}
 			}
 
-			cards, err := cardStore.HybridSearch(ctx, filter)
+			cards, err := cardStore.HybridSearch(spanCtx, filter)
 			if err != nil {
 				return nil, fmt.Errorf("hybrid search failed: %w", err)
 			}
+			span.SetAttributes(AttrSearchMatches.Int(len(cards)))
 
 			setState(ctx, ev, StateKeySearchResults, cards)
 			setNodeTrace(ev, NodeHybridSearch, fmt.Sprintf("matches=%d", len(cards)))
@@ -156,8 +172,13 @@ func newHybridSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 func newBroadSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeBroadSearch,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeBroadSearch, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			filter := getSearchFilter(ctx)
@@ -183,10 +204,11 @@ func newBroadSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 				keywords = append(keywords, extractKeywordsHeuristic(rawText)...)
 			}
 
-			cards, err := cardStore.BroadSearch(ctx, userID, keywords)
+			cards, err := cardStore.BroadSearch(spanCtx, userID, keywords)
 			if err != nil {
 				return nil, fmt.Errorf("broad search failed: %w", err)
 			}
+			span.SetAttributes(AttrSearchMatches.Int(len(cards)))
 
 			setState(ctx, ev, StateKeySearchResults, cards)
 			setNodeTrace(ev, NodeBroadSearch, fmt.Sprintf("matches=%d", len(cards)))
@@ -201,11 +223,17 @@ func newBroadSearchNode(cardStore store.CardStore) *workflow.FunctionNode {
 func newFormatCarouselNode() *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeFormatCarousel,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			_, span := startNodeSpan(ctx, NodeFormatCarousel, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			cards := getSearchResults(ctx)
+			span.SetAttributes(AttrSearchMatches.Int(len(cards)))
 			if len(cards) == 0 {
 				reply := "😅 找不到符合條件的名片，建議換個關鍵字（例如公司名稱、職稱或活動場合）再試一次！"
 				setState(ctx, ev, StateKeyReplyText, reply)
@@ -234,15 +262,20 @@ func newFormatCarouselNode() *workflow.FunctionNode {
 func newEmailDraftNode(llm model.LLM, cardStore store.CardStore) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeEmailDraft,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeEmailDraft, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			cardID := getStringState(ctx, StateKeyTargetCardID)
 			var card *models.BusinessCard
 			if cardID != "" && cardStore != nil {
-				c, err := cardStore.GetByID(ctx, cardID)
-				if err == nil {
+				c, getErr := cardStore.GetByID(spanCtx, cardID)
+				if getErr == nil {
 					card = c
 				}
 			}
@@ -252,8 +285,9 @@ func newEmailDraftNode(llm model.LLM, cardStore store.CardStore) *workflow.Funct
 			if card == nil {
 				return nil, fmt.Errorf("target business card not found for email draft (card_id=%q)", cardID)
 			}
+			span.SetAttributes(AttrCardID.String(card.ID), AttrCardCompany.String(card.Company))
 
-			draft := generateEmailDraft(ctx, llm, card)
+			draft := generateEmailDraft(spanCtx, llm, card)
 			setState(ctx, ev, StateKeyDraftEmailText, draft)
 			setState(ctx, ev, StateKeyReplyText, draft)
 			ev.Content = genai.NewContentFromText(draft, genai.RoleModel)

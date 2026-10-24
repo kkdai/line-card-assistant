@@ -1,0 +1,93 @@
+[
+  { "name": "logName",          "type": "STRING",    "mode": "NULLABLE" },
+  { "name": "textPayload",      "type": "STRING",    "mode": "NULLABLE" },
+  { "name": "timestamp",        "type": "TIMESTAMP", "mode": "NULLABLE" },
+  { "name": "receiveTimestamp", "type": "TIMESTAMP", "mode": "NULLABLE" },
+  { "name": "severity",         "type": "STRING",    "mode": "NULLABLE" },
+  { "name": "insertId",         "type": "STRING",    "mode": "NULLABLE" },
+  { "name": "trace",            "type": "STRING",    "mode": "NULLABLE" },
+  { "name": "spanId",           "type": "STRING",    "mode": "NULLABLE" },
+  { "name": "traceSampled",     "type": "BOOLEAN",   "mode": "NULLABLE" },
+  {
+    "name": "resource", "type": "RECORD", "mode": "NULLABLE",
+    "fields": [
+      { "name": "type", "type": "STRING", "mode": "NULLABLE" },
+      {
+        "name": "labels", "type": "RECORD", "mode": "NULLABLE",
+        "fields": [
+          { "name": "project_id", "type": "STRING", "mode": "NULLABLE" },
+          { "name": "location",   "type": "STRING", "mode": "NULLABLE" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "labels", "type": "RECORD", "mode": "NULLABLE",
+    "fields": [
+      { "name": "gen_ai_system", "type": "STRING", "mode": "NULLABLE" }
+    ]
+  },
+  {
+    "name": "jsonPayload", "type": "RECORD", "mode": "NULLABLE",
+    "fields": [
+      { "name": "index",         "type": "INTEGER", "mode": "NULLABLE" },
+      { "name": "finish_reason", "type": "STRING",  "mode": "NULLABLE" },
+      {
+        "name": "content", "type": "RECORD", "mode": "NULLABLE",
+        "fields": [
+          { "name": "role", "type": "STRING", "mode": "NULLABLE" },
+          {
+            "name": "parts", "type": "RECORD", "mode": "REPEATED",
+            "fields": [
+              { "name": "text",    "type": "STRING",  "mode": "NULLABLE" },
+              { "name": "thought", "type": "BOOLEAN", "mode": "NULLABLE" },
+              {
+                "name": "functionCall", "type": "RECORD", "mode": "NULLABLE",
+                "fields": [
+                  { "name": "id",   "type": "STRING", "mode": "NULLABLE" },
+                  { "name": "name", "type": "STRING", "mode": "NULLABLE" }
+                ]
+              },
+              {
+                "name": "functionResponse", "type": "RECORD", "mode": "NULLABLE",
+                "fields": [
+                  { "name": "id",   "type": "STRING", "mode": "NULLABLE" },
+                  { "name": "name", "type": "STRING", "mode": "NULLABLE" }
+                ]
+              },
+              {
+                "name": "inlineData", "type": "RECORD", "mode": "NULLABLE",
+                "fields": [
+                  { "name": "mimeType", "type": "STRING", "mode": "NULLABLE" }
+                ]
+              },
+              {
+                "name": "fileData", "type": "RECORD", "mode": "NULLABLE",
+                "fields": [
+                  { "name": "fileUri",  "type": "STRING", "mode": "NULLABLE" },
+                  { "name": "mimeType", "type": "STRING", "mode": "NULLABLE" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "otel", "type": "RECORD", "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "resource", "type": "RECORD", "mode": "NULLABLE",
+        "fields": [
+          {
+            "name": "attributes", "type": "RECORD", "mode": "NULLABLE",
+            "fields": [
+              { "name": "service_version", "type": "STRING", "mode": "NULLABLE" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

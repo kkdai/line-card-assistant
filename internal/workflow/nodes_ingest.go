@@ -17,6 +17,7 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/geminitool"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
@@ -61,8 +62,21 @@ func setNodeTrace(ev *session.Event, nodeName, summary string) {
 func newRouterNode() *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeRouter,
-		func(ctx agent.Context, input any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, input any) (ev *session.Event, err error) {
+			_, span := startNodeSpan(ctx, NodeRouter,
+				AttrInvocationID.String(ctx.InvocationID()),
+				AttrSessionID.String(ctx.SessionID()),
+				AttrUserID.String(ctx.UserID()),
+			)
+			defer func() {
+				routeAttr := ""
+				if ev != nil && len(ev.Routes) > 0 {
+					routeAttr = ev.Routes[0]
+				}
+				endNodeSpan(span, err, AttrWorkflowRoute.String(routeAttr))
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			// When invoked directly from ADK WebUI / A2A / Agent Engine Playground with an image part,
@@ -184,8 +198,13 @@ func newRouterNode() *workflow.FunctionNode {
 func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeVisionOCR,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeVisionOCR, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			imgBytes, mimeType := loadCardImageBytes(ctx)
@@ -198,11 +217,15 @@ func newVisionOCRNode(llm model.LLM) *workflow.FunctionNode {
 				imgBytes = []byte(hintText)
 			}
 
-			card, err := extractCardFromImageWithMIME(ctx, llm, imgBytes, mimeType, userID)
+			card, err := extractCardFromImageWithMIME(spanCtx, llm, imgBytes, mimeType, userID)
 			if err != nil {
 				return nil, fmt.Errorf("vision OCR failed: %w", err)
 			}
 
+			span.SetAttributes(
+				AttrCardID.String(card.ID),
+				AttrCardCompany.String(card.Company),
+			)
 			setState(ctx, ev, StateKeyDraftCard, card)
 			setNodeTrace(ev, NodeVisionOCR, fmt.Sprintf("name=%s company=%s", card.Name, card.Company))
 			ev.Output = card
@@ -347,8 +370,13 @@ func extractCardFromImageWithMIME(ctx context.Context, llm model.LLM, imgBytes [
 func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeCleanAndDedup,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeCleanAndDedup, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			card := getDraftCard(ctx)
@@ -362,10 +390,11 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 				userID = getStringState(ctx, StateKeyUserID)
 			}
 
-			dupCard, isDup, err := cardStore.CheckDuplicate(ctx, userID, card.Name, card.Company, card.Email)
+			dupCard, isDup, err := cardStore.CheckDuplicate(spanCtx, userID, card.Name, card.Company, card.Email)
 			if err != nil {
 				return nil, fmt.Errorf("check duplicate: %w", err)
 			}
+			span.SetAttributes(AttrCardDuplicate.Bool(isDup))
 
 			oldTitle := ""
 			dupID := ""
@@ -392,10 +421,31 @@ func newCleanAndDedupNode(cardStore store.CardStore) *workflow.FunctionNode {
 	)
 }
 
-// NewCompanyEnrichAgent constructs the ADK llmagent equipped with GoogleSearch used inside CompanyEnrichNode.
+// FormatCompanyProfileArgs defines structured company enrichment output arguments.
+type FormatCompanyProfileArgs struct {
+	CompanyName string   `json:"company_name" jsonschema:"The company name extracted from the business card"`
+	Summary     string   `json:"summary" jsonschema:"Two-sentence Traditional Chinese company background summary"`
+	Tags        []string `json:"tags" jsonschema:"3 to 5 industry or technology tags"`
+}
+
+// NewCompanyEnrichAgent constructs the ADK llmagent equipped with GoogleSearch and function tools used inside CompanyEnrichNode.
 func NewCompanyEnrichAgent(llm model.LLM) (agent.Agent, error) {
 	if llm == nil {
 		llm = NewMockLLM()
+	}
+	tools := []tool.Tool{
+		geminitool.GoogleSearch{},
+	}
+	if formatTool, err := functiontool.New(functiontool.Config{
+		Name:        "format_company_profile",
+		Description: "Formats enriched company summary and industry tags into structured JSON.",
+	}, func(_ agent.Context, args FormatCompanyProfileArgs) (map[string]any, error) {
+		return map[string]any{
+			"company_info": args.Summary,
+			"tags":         args.Tags,
+		}, nil
+	}); err == nil && formatTool != nil {
+		tools = append(tools, formatTool)
 	}
 	return llmagent.New(llmagent.Config{
 		Name:        "CompanyEnrichAgent",
@@ -403,9 +453,7 @@ func NewCompanyEnrichAgent(llm model.LLM) (agent.Agent, error) {
 		Model:       llm,
 		Mode:        llmagent.ModeSingleTurn,
 		Instruction: "你是一位專業商業分析助理。請根據公司名稱搜尋背景資訊，並回傳 JSON 格式：{\"company_info\": \"兩句話公司簡介\", \"tags\": [\"產業標籤1\", \"產業標籤2\", \"產業標籤3\"]}。",
-		Tools: []tool.Tool{
-			geminitool.GoogleSearch{},
-		},
+		Tools:       tools,
 	})
 }
 
@@ -415,8 +463,13 @@ func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
 
 	return workflow.NewFunctionNode(
 		NodeCompanyEnrich,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeCompanyEnrich, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			card := getDraftCard(ctx)
@@ -427,13 +480,14 @@ func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
 			if companyName == "" {
 				companyName = "未知公司"
 			}
+			span.SetAttributes(AttrCardCompany.String(companyName))
 
 			prompt := fmt.Sprintf("請查詢此公司的背景並產生 2 句話簡介與 3 到 5 個產業標籤 (JSON): %s", companyName)
 
 			var replyText string
 			if enrichAgent != nil {
-				for subEv, err := range llmagent.RunLLMAgentAsNode(enrichAgent, ctx, prompt) {
-					if err != nil {
+				for subEv, subErr := range llmagent.RunLLMAgentAsNode(enrichAgent, ctx, prompt) {
+					if subErr != nil {
 						break
 					}
 					if subEv != nil && subEv.Content != nil {
@@ -456,7 +510,7 @@ func newCompanyEnrichNode(llm model.LLM) *workflow.FunctionNode {
 						},
 					},
 				}
-				replyText, _ = generateTextFromLLM(ctx, llm, req)
+				replyText, _ = generateTextFromLLM(spanCtx, llm, req)
 			}
 
 			companyInfo, tags := parseCompanyEnrichment(replyText, companyName)
@@ -494,12 +548,17 @@ func parseCompanyEnrichment(raw string, companyName string) (string, []string) {
 func newContextMatchNode(llm model.LLM) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeContextMatch,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeContextMatch, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			recentMsgs := getStringSliceState(ctx, StateKeyRecentMessages)
-			metContext := inferMetContext(ctx, llm, recentMsgs)
+			metContext := inferMetContext(spanCtx, llm, recentMsgs)
 
 			setState(ctx, ev, StateKeyEnrichedMetContext, metContext)
 			setNodeTrace(ev, NodeContextMatch, fmt.Sprintf("met_context=%s", metContext))
@@ -537,8 +596,13 @@ func inferMetContext(ctx context.Context, llm model.LLM, recentMsgs []string) st
 func newBuildPreviewNode() *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeBuildPreview,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			_, span := startNodeSpan(ctx, NodeBuildPreview, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			card := getDraftCard(ctx)
@@ -599,11 +663,21 @@ func newHITLConfirmNode() *workflow.FunctionNode {
 	rerun := true
 	return workflow.NewFunctionNode(
 		NodeHITLConfirm,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			_, span := startNodeSpan(ctx, NodeHITLConfirm, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				routeAttr := "pause"
+				if ev != nil && len(ev.Routes) > 0 {
+					routeAttr = ev.Routes[0]
+				}
+				endNodeSpan(span, err, AttrHITLAction.String(routeAttr))
+			}()
+
 			activeID := getStringState(ctx, StateKeyActiveInterruptID)
 			if activeID != "" {
+				span.SetAttributes(AttrHITLInterrupt.String(activeID))
 				if resumed, ok := ctx.ResumedInput(activeID); ok && resumed != nil {
-					ev := session.NewEvent(ctx, ctx.InvocationID())
+					ev = session.NewEvent(ctx, ctx.InvocationID())
 					ev.Actions.StateDelta = make(map[string]any)
 					// Clear active interrupt ID so a subsequent loop back to HITLConfirmNode pauses cleanly.
 					setState(ctx, ev, StateKeyActiveInterruptID, "")
@@ -651,6 +725,7 @@ func newHITLConfirmNode() *workflow.FunctionNode {
 			// Enter HITL pause state
 			seq := getIntState(ctx, StateKeyHITLSeq) + 1
 			interruptID := fmt.Sprintf("hitl_confirm_%d", seq)
+			span.SetAttributes(AttrHITLInterrupt.String(interruptID))
 			flexJSON := getStringState(ctx, StateKeyFlexPreviewJSON)
 			card := getDraftCard(ctx)
 
@@ -708,8 +783,13 @@ func isConfirmAction(reply string) bool {
 func newApplyEditNode(llm model.LLM, cardStore store.CardStore) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeApplyEdit,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeApplyEdit, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err, AttrWorkflowRoute.String(RoutePreview))
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			card := getDraftCard(ctx)
@@ -718,7 +798,7 @@ func newApplyEditNode(llm model.LLM, cardStore store.CardStore) *workflow.Functi
 			}
 			instruction := getStringState(ctx, StateKeyEditInstruction)
 
-			updatedCard := applyCardEdit(ctx, llm, card, instruction)
+			updatedCard := applyCardEdit(spanCtx, llm, card, instruction)
 			if updatedCard.Phone != "" {
 				updatedCard.Phone = store.NormalizePhone(updatedCard.Phone)
 				setState(ctx, ev, StateKeyCleanPhone, updatedCard.Phone)
@@ -840,8 +920,13 @@ func applyDeterministicEdits(card *models.BusinessCard, instruction string) bool
 func newSaveCardNode(cardStore store.CardStore, llm model.LLM) *workflow.FunctionNode {
 	return workflow.NewFunctionNode(
 		NodeSaveCard,
-		func(ctx agent.Context, _ any) (*session.Event, error) {
-			ev := session.NewEvent(ctx, ctx.InvocationID())
+		func(ctx agent.Context, _ any) (ev *session.Event, err error) {
+			spanCtx, span := startNodeSpan(ctx, NodeSaveCard, AttrInvocationID.String(ctx.InvocationID()))
+			defer func() {
+				endNodeSpan(span, err)
+			}()
+
+			ev = session.NewEvent(ctx, ctx.InvocationID())
 			ev.Actions.StateDelta = make(map[string]any)
 
 			card := getDraftCard(ctx)
@@ -855,11 +940,12 @@ func newSaveCardNode(cardStore store.CardStore, llm model.LLM) *workflow.Functio
 				}
 			}
 
-			if err := cardStore.Save(ctx, card); err != nil {
+			if err := cardStore.Save(spanCtx, card); err != nil {
 				return nil, fmt.Errorf("save card: %w", err)
 			}
+			span.SetAttributes(AttrCardID.String(card.ID), AttrCardCompany.String(card.Company))
 
-			draftEmail := generateEmailDraft(ctx, llm, card)
+			draftEmail := generateEmailDraft(spanCtx, llm, card)
 			reply := fmt.Sprintf("✅ 名片已成功儲存！\n👤 姓名：%s\n💼 職稱：%s\n🏢 公司：%s\n📞 電話：%s\n\n✉️ 破冰跟進信草稿：\n%s",
 				card.Name, card.Title, card.Company, card.Phone, draftEmail)
 
