@@ -1,0 +1,82 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'sessions/**'
+      - 'eval/**'
+      - 'e2e/**'
+      - 'deployment/**'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: 'projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/${{ secrets.WIF_POOL_ID }}/providers/${{ secrets.WIF_PROVIDER_ID }}'
+          service_account: '${{ secrets.GCP_SERVICE_ACCOUNT }}'
+          create_credentials_file: true
+          project_id: ${{ vars.CICD_PROJECT_ID }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Run unit tests
+        run: go test -race -v ./...
+
+      - name: Run integration tests
+        run: go test -v -tags=e2e ./e2e/integration/... -short
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ vars.CICD_PROJECT_ID }}
+          GOOGLE_CLOUD_LOCATION: global
+          GOOGLE_GENAI_USE_VERTEXAI: "true"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
+
+      - name: Run Phase 4 Agent Evaluation Quality Gate
+        run: |
+          DRY_RUN=true uvx google-agents-cli@1.10.0 eval run \
+            --config eval/eval_config.yaml \
+            --dataset eval/datasets/business_card_workflow.evalset.json \
+            --agent-name line_card_assistant \
+            --project ${{ vars.CICD_PROJECT_ID || 'line-vertex' }} \
+            --location asia-east1 \
+            --no-confirm-project
